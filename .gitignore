@@ -12,6 +12,8 @@ install_manifest.txt
 compile_commands.json
 *.cmake
 !CMakeLists.txt
+tokens.txt
+errors.txt
 
 # === Compiled Objects & Libraries ===
 *.o

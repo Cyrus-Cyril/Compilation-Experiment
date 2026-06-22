@@ -1,6 +1,14 @@
 #include <cstring>
 #include <iostream>
 
+#include "toyc/lexer/token.h"
+
+// yylval 定义（只有一个翻译单元提供定义）
+toyc::LexerValue yylval;
+
+// yylex() 由 Flex 生成，在 lex.yy.c 中定义
+extern int yylex();
+
 int main(int argc, char* argv[]) {
     // 解析命令行参数
     bool optFlag = false;
@@ -10,15 +18,31 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // TODO Phase 3-8: Lexer → Parser → Semantic → IR → Optimize → Backend
-    // 当前阶段：框架搭建，仅输出空汇编文件
+    // 当前阶段：第三阶段 — 词法分析器
+    // 从 stdin 读取源程序，输出 Token 流
+    int token;
+    while ((token = yylex()) != 0) {
+        auto type = static_cast<toyc::TokenType>(token);
+        std::cout << toyc::tokenTypeName(type);
 
-    // RISC-V 最小合法汇编（空程序）
-    std::cout << ".text" << std::endl;
-    std::cout << ".globl main" << std::endl;
-    std::cout << "main:" << std::endl;
-    std::cout << "    li a0, 0" << std::endl;
-    std::cout << "    ret" << std::endl;
+        // 根据 Token 类型输出附加数据
+        switch (type) {
+            case toyc::TokenType::ID:
+                std::cout << "("
+                          << (yylval.strVal ? yylval.strVal : "")
+                          << ")";
+                free(yylval.strVal);
+                yylval.strVal = nullptr;
+                break;
+            case toyc::TokenType::NUMBER:
+                std::cout << "(" << yylval.intVal << ")";
+                break;
+            default:
+                break;
+        }
+
+        std::cout << std::endl;
+    }
 
     return 0;
 }

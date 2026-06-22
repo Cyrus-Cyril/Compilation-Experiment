@@ -35,7 +35,7 @@ BISON_TARGET(ToyCParser
 add_library(toyc_lexer STATIC
     ${FLEX_ToyCLexer_OUTPUTS}
 )
-set_target_properties(toyc_lexer PROPERTIES LINKER_LANGUAGE C)
+set_source_files_properties(${FLEX_ToyCLexer_OUTPUTS} PROPERTIES LANGUAGE CXX)
 target_include_directories(toyc_lexer PUBLIC
     ${LEXER_OUTPUT_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include

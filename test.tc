@@ -1,0 +1,78 @@
+// ============================================================
+// ToyC Lexer 综合测试用例
+// 覆盖全部关键字、运算符、分隔符、数字、标识符、注释
+// ============================================================
+
+// ---- 1. 关键字 + 分隔符 + 标识符 ----
+int main() {
+    return 0;
+}
+
+// ---- 2. 类型与变量声明 ----
+int a;
+const int b;
+void func() {
+    int local_var;
+}
+
+// ---- 3. if/else 条件分支 ----
+if (x > 0) {
+    return x;
+} else {
+    return -x;
+}
+
+// ---- 4. while 循环 ----
+while (count < 10) {
+    count = count + 1;
+}
+
+// ---- 5. break / continue ----
+while (1) {
+    if (done) {
+        break;
+    }
+    continue;
+}
+
+// ---- 6. 全部运算符 ----
+z = a + b;      // PLUS
+z = a - b;      // MINUS
+z = a * b;      // STAR
+z = a / b;      // SLASH
+z = a % b;      // PERCENT
+cmp = a < b;    // LT
+cmp = a > b;    // GT
+cmp = a <= b;   // LE
+cmp = a >= b;   // GE
+cmp = a == b;   // EQ
+cmp = a != b;   // NE
+flag = a && b;  // AND
+flag = a || b;  // OR
+flag = !a;      // NOT
+
+// ---- 7. 数字（含负数和零边界）----
+int zero = 0;
+int positive = 12345;
+int negative = -7;
+int neg_zero = -0;
+
+// ---- 8. 复杂标识符 ----
+int _underscore;
+int camelCase;
+int PascalCase;
+int _123abc;
+
+// ---- 9. 多行注释 ----
+/* simple block comment */
+int x;
+/* multi
+   line
+   comment */
+int y;
+
+/* comment with stars *** inside */
+int z;
+
+// ---- 10. 非法字符（测试错误报告）----
+int bad = @42;

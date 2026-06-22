@@ -195,68 +195,68 @@ SEMICOLON
 
 ### Token 类型设计
 
-* [ ] TokenType 枚举
-* [ ] Token 结构体
+* [x] TokenType 枚举（含 `tokenTypeName()`）
+* [x] Token 结构体（含 `LexerValue` 传递 yylval）
 
 ### 关键字识别
 
-* [ ] int
-* [ ] void
-* [ ] const
-* [ ] if
-* [ ] else
-* [ ] while
-* [ ] break
-* [ ] continue
-* [ ] return
+* [x] int
+* [x] void
+* [x] const
+* [x] if
+* [x] else
+* [x] while
+* [x] break
+* [x] continue
+* [x] return
 
 ### 标识符识别
 
-* [ ] ID
+* [x] ID（`[_A-Za-z][_A-Za-z0-9]*`，通过 `yylval.strVal` 传递）
 
 ### 数字识别
 
-* [ ] NUMBER
+* [x] NUMBER（`-?(0|[1-9][0-9]*)`，拒绝前导零，通过 `yylval.intVal` 传递）
 
 ### 运算符识别
 
-* [ ] +
-* [ ] -
-* [ ] *
-* [ ] /
-* [ ] %
-* [ ] <
-* [ ] >
-* [ ] <=
-* [ ] >=
-* [ ] ==
-* [ ] !=
-* [ ] &&
-* [ ] ||
-* [ ] !
-* [ ] =
+* [x] +
+* [x] -
+* [x] *
+* [x] /
+* [x] %
+* [x] <
+* [x] >
+* [x] <=
+* [x] >=
+* [x] ==
+* [x] !=
+* [x] &&
+* [x] ||
+* [x] !
+* [x] =
 
 ### 分隔符识别
 
-* [ ] (
-* [ ] )
-* [ ] {
-* [ ] }
-* [ ] ;
-* [ ] ,
+* [x] (
+* [x] )
+* [x] {
+* [x] }
+* [x] ;
+* [x] ,
 
 ### 注释处理
 
-* [ ] 单行注释
-* [ ] 多行注释
+* [x] 单行注释（`//` 到行末）
+* [x] 多行注释（`/* ... */`，Start Condition 处理，行列号正确追踪）
 
 ### 测试
 
-* [ ] Lexer 单元测试
+* [x] Lexer 单元测试（36 个测试用例覆盖全部类别）
 
 ## 输出
 
-* [ ] Lexer 模块完成
+* [x] Lexer 模块完成（`token.h` + `lexer.l` + `main.cpp` 集成）
 
 ---
 
