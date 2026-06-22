@@ -1,0 +1,48 @@
+# === Build ===
+build/
+cmake-build-*/
+
+# === CMake ===
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+*.cmake
+!CMakeLists.txt
+
+# === Compiled Objects & Libraries ===
+*.o
+*.obj
+*.os
+*.so
+*.dylib
+*.lib
+*.a
+*.dll
+*.exe
+*.out
+
+# === Flex / Bison Generated ===
+lex.yy.c
+lex.yy.h
+*.tab.cpp
+*.tab.hpp
+*.tab.c
+*.tab.h
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# === Editor Temp Files ===
+*.tmp
+*.bak
+*.log
