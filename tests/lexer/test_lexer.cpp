@@ -16,6 +16,8 @@ extern void yy_delete_buffer(void*);
 #include <cstdlib>
 #include <cstring>
 
+toyc::LexerValue parser_yylval;
+
 static int test_count = 0;
 static int pass_count = 0;
 
@@ -129,9 +131,7 @@ int main() {
     expect_number("0",     0);
     expect_number("42",    42);
     expect_number("1",     1);
-    expect_number("-0",    0);    // -0 == 0
-    expect_number("-5",   -5);
-    expect_number("-123", -123);
+    expect_token("-", static_cast<int>(toyc::TokenType::MINUS));
 
     // ---- 标识符 ----
     printf("\n-- Identifiers --\n");
@@ -204,6 +204,27 @@ int main() {
             printf("  PASS: \"int a = 42;\" -> INT ID ASSIGN NUMBER(42) SEMICOLON\n");
         } else {
             printf("  FAIL: \"int a = 42;\" sequence mismatch\n");
+        }
+    }
+
+    printf("\n-- Unary Minus Split --\n");
+    {
+        ++test_count;
+        yy_scan_string("a-1");
+        int t1 = yylex();
+        bool first_is_id = (t1 == static_cast<int>(toyc::TokenType::ID));
+        if (yylval.strVal) { free(yylval.strVal); yylval.strVal = nullptr; }
+        int t2 = yylex();
+        int t3 = yylex();
+        bool ok = first_is_id &&
+                  t2 == static_cast<int>(toyc::TokenType::MINUS) &&
+                  t3 == static_cast<int>(toyc::TokenType::NUMBER) &&
+                  yylval.intVal == 1;
+        if (ok) {
+            ++pass_count;
+            printf("  PASS: \"a-1\" -> ID MINUS NUMBER(1)\n");
+        } else {
+            printf("  FAIL: \"a-1\" sequence mismatch\n");
         }
     }
 

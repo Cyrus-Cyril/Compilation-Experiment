@@ -82,7 +82,7 @@ static int col = 1;
 ";"         { UPDATE_COL(); return static_cast<int>(toyc::TokenType::SEMICOLON); }
 ","         { UPDATE_COL(); return static_cast<int>(toyc::TokenType::COMMA); }
 
-"-"?("0"|[1-9][0-9]*) {
+("0"|[1-9][0-9]*) {
     yylval.intVal = static_cast<int>(strtol(yytext, nullptr, 10));
     UPDATE_COL();
     return static_cast<int>(toyc::TokenType::NUMBER);

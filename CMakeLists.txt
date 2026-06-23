@@ -30,6 +30,7 @@ BISON_TARGET(ToyCParser
     ${PARSER_OUTPUT_DIR}/parser.tab.cpp
     COMPILE_FLAGS "-d"
 )
+ADD_FLEX_BISON_DEPENDENCY(ToyCLexer ToyCParser)
 
 # 将生成的 lexer/parser 编译为库
 add_library(toyc_lexer STATIC
@@ -43,6 +44,7 @@ target_include_directories(toyc_lexer PUBLIC
 
 add_library(toyc_parser STATIC
     ${BISON_ToyCParser_OUTPUTS}
+    src/parser/parser_api.cpp
 )
 target_include_directories(toyc_parser PUBLIC
     ${PARSER_OUTPUT_DIR}
@@ -52,6 +54,8 @@ target_link_libraries(toyc_parser PUBLIC toyc_lexer)
 
 # Bison 生成的 parser.tab.cpp 引用了 lexer 的 header，需要 lexer gen dir
 target_include_directories(toyc_parser PRIVATE ${LEXER_OUTPUT_DIR})
+
+enable_testing()
 
 # ============================================================
 # Semantic Analyzer
@@ -111,3 +115,32 @@ target_link_libraries(toyc PRIVATE
     toyc_parser
     toyc_lexer
 )
+
+add_executable(test_lexer
+    tests/lexer/test_lexer.cpp
+)
+target_include_directories(test_lexer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_lexer PRIVATE toyc_lexer)
+
+add_executable(test_parser
+    tests/parser/test_parser.cpp
+)
+target_include_directories(test_parser PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_parser PRIVATE toyc_parser toyc_lexer)
+
+add_executable(test_semantic
+    tests/semantic/test_semantic.cpp
+)
+target_include_directories(test_semantic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_semantic PRIVATE toyc_semantic toyc_parser toyc_lexer)
+
+add_executable(test_ir
+    tests/ir/test_ir.cpp
+)
+target_include_directories(test_ir PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_ir PRIVATE toyc_ir toyc_parser toyc_lexer)
+
+add_test(NAME lexer_unit COMMAND test_lexer)
+add_test(NAME parser_unit COMMAND test_parser)
+add_test(NAME semantic_unit COMMAND test_semantic)
+add_test(NAME ir_unit COMMAND test_ir)

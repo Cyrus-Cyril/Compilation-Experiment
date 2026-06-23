@@ -96,10 +96,10 @@ ToyCCompiler/
 │   └── backend/     → code_generator.cpp
 │
 ├── tests/
-│   ├── lexer/
-│   ├── parser/
-│   ├── semantic/
-│   ├── ir/
+│   ├── lexer/      → test_lexer.cpp
+│   ├── parser/     → test_parser.cpp
+│   ├── semantic/   → test_semantic.cpp
+│   ├── ir/         → test_ir.cpp
 │   └── backend/
 │
 └── main.cpp
@@ -158,12 +158,12 @@ Flex 读取 `.l` 规则文件，生成词法分析器 C 代码；Bison 读取 `.
 ### 使用任务清单
 
 * [x] 编写 `lexer.l` 文件（正则规则 → Token 定义）→ 占位骨架已创建，完整实现在第三阶段
-* [x] 编写 `parser.y` 文件（ToyC 文法 → 语义动作 → AST 构建）→ 占位骨架已创建，完整实现在第四阶段
+* [x] 编写 `parser.y` 文件（ToyC 文法 → 语义动作 → AST 构建）→ 已完成基础 AST 构建与表达式优先级处理
 * [x] CMake 集成 Flex/Bison（`find_package` 或 `add_custom_command`）
-* [ ] 定义 Token 值联合体（`%union`）和类型声明（`%type`）
-* [ ] 处理 Flex → Bison 的 Token 传递（`yylval`）
-* [ ] 处理运算符优先级与结合性（`%left`/`%right`/`%nonassoc`）
-* [ ] 处理文法冲突（移进/归约警告 → 调整文法）
+* [x] 定义 Token 语义值结构和类型声明（`%type`，使用自定义语义值结构替代 `%union`）
+* [x] 处理 Flex → Bison 的 Token 传递（`yylval`）
+* [x] 处理运算符优先级与结合性（`%left`/`%right`/`%nonassoc`）
+* [x] 处理文法冲突（移进/归约警告 → 调整文法）
 * [ ] 错误恢复策略（`error` 产生式）
 * [ ] 源位置追踪（行号/列号，用于报错）
 
@@ -216,7 +216,7 @@ SEMICOLON
 
 ### 数字识别
 
-* [x] NUMBER（`-?(0|[1-9][0-9]*)`，拒绝前导零，通过 `yylval.intVal` 传递）
+* [x] NUMBER（`0|[1-9][0-9]*`，拒绝前导零，通过 `yylval.intVal` 传递；负号由 Parser 的一元表达式处理）
 
 ### 运算符识别
 
@@ -253,6 +253,7 @@ SEMICOLON
 ### 测试
 
 * [x] Lexer 单元测试（36 个测试用例覆盖全部类别）
+* [x] 记录 Lexer / Parser 联调 bug → `docs/bug-issue-log.md`
 
 ## 输出
 
@@ -270,46 +271,48 @@ SEMICOLON
 
 ### AST 节点设计
 
-* [ ] Program
-* [ ] FunctionDecl
-* [ ] VarDecl
-* [ ] ConstDecl
+* [x] Program
+* [x] FunctionDecl
+* [x] VarDecl
+* [x] ConstDecl
 
 ### Statement
 
-* [ ] BlockStmt
-* [ ] IfStmt
-* [ ] WhileStmt
-* [ ] ReturnStmt
-* [ ] BreakStmt
-* [ ] ContinueStmt
-* [ ] AssignStmt
-* [ ] DeclStmt（语句块内的局部声明）
+* [x] BlockStmt
+* [x] IfStmt
+* [x] WhileStmt
+* [x] ReturnStmt
+* [x] BreakStmt
+* [x] ContinueStmt
+* [x] AssignStmt
+* [x] DeclStmt（语句块内的局部声明）
 
 ### Expression
 
-* [ ] BinaryExpr
-* [ ] UnaryExpr
-* [ ] CallExpr
-* [ ] IdentifierExpr
-* [ ] NumberExpr
+* [x] BinaryExpr
+* [x] UnaryExpr
+* [x] CallExpr
+* [x] IdentifierExpr
+* [x] NumberExpr
 
 ### Parser
 
-* [ ] 编译单元解析
-* [ ] 函数定义解析
-* [ ] 声明解析
-* [ ] 语句解析
-* [ ] 表达式解析
+* [x] 编译单元解析
+* [x] 函数定义解析
+* [x] 声明解析
+* [x] 语句解析
+* [x] 表达式解析
 
 ### 测试
 
-* [ ] AST 输出测试
-* [ ] 文法覆盖测试
+* [x] AST 输出测试
+* [x] 文法覆盖测试（基础样例：全局声明、函数调用、控制流、表达式优先级）
 
 ## 输出
 
-* [ ] AST 构建完成
+* [x] AST 构建完成
+* [x] Parser 基础测试完成（`tests/parser/test_parser.cpp`）
+* [x] 本地构建与自动化测试验证
 
 ---
 
@@ -323,68 +326,68 @@ SEMICOLON
 
 ### 符号表
 
-* [ ] Symbol
-* [ ] Scope
-* [ ] SymbolTable
+* [x] Symbol
+* [x] Scope
+* [x] SymbolTable
 
 ### 作用域管理
 
-* [ ] 全局作用域
-* [ ] 函数作用域
-* [ ] Block 作用域
+* [x] 全局作用域
+* [x] 函数作用域
+* [x] Block 作用域
 
 ### 类型检查
 
-* [ ] int
-* [ ] void
+* [x] int
+* [x] void
 
 ### 语义检查
 
 #### 标识符
 
-* [ ] 重定义检查
-* [ ] 未定义检查
-* [ ] 使用必须在声明之后
+* [x] 重定义检查
+* [x] 未定义检查
+* [x] 使用必须在声明之后
 
 #### 常量
 
-* [ ] const 不可修改
-* [ ] const 初始化表达式必须在编译期可确定（只能含数字字面量和已知常量）
+* [x] const 不可修改
+* [x] const 初始化表达式必须在编译期可确定（只能含数字字面量和已知常量）
 
 #### 声明
 
-* [ ] VarDecl / ConstDecl 必须带初始化表达式
+* [x] VarDecl / ConstDecl 必须带初始化表达式
 
 #### 函数
 
-* [ ] 函数存在检查
-* [ ] 参数数量检查
-* [ ] 参数类型检查（仅 int）
-* [ ] 返回值检查（int 函数每条执行路径必须 return；void 函数 return 不能带值）
-* [ ] 函数调用必须在被调函数声明之后
-* [ ] void 函数调用不能作为 if/while 条件或赋值语句右值
+* [x] 函数存在检查
+* [x] 参数数量检查
+* [x] 参数类型检查（仅 int）
+* [x] 返回值检查（int 函数每条执行路径必须 return；void 函数 return 不能带值）
+* [x] 函数调用必须在被调函数声明之后
+* [x] void 函数调用不能作为 if/while 条件或赋值语句右值
 
 #### 表达式
 
-* [ ] 除数不能为零
-* [ ] 短路求值逻辑正确性
+* [x] 除数不能为零
+* [x] 短路求值逻辑正确性
 
 #### 控制流
 
-* [ ] break 检查（仅在循环中）
-* [ ] continue 检查（仅在循环中）
+* [x] break 检查（仅在循环中）
+* [x] continue 检查（仅在循环中）
 
 #### 程序入口
 
-* [ ] main 函数检查（存在、无参数、返回 int）
+* [x] main 函数检查（存在、无参数、返回 int）
 
 ### 常量表达式求值
 
-* [ ] 编译期计算 const
+* [x] 编译期计算 const
 
 ## 输出
 
-* [ ] Semantic Analyzer 完成
+* [x] Semantic Analyzer 完成
 
 ---
 
@@ -409,54 +412,54 @@ t2 = a + t1
 
 ### 算术指令
 
-* [ ] ADD
-* [ ] SUB
-* [ ] MUL
-* [ ] DIV
-* [ ] MOD
-* [ ] NEG（一元取负）
+* [x] ADD
+* [x] SUB
+* [x] MUL
+* [x] DIV
+* [x] MOD
+* [x] NEG（一元取负）
 
 ### 比较指令
 
-* [ ] EQ
-* [ ] NE
-* [ ] LT
-* [ ] GT
-* [ ] LE
-* [ ] GE
+* [x] EQ
+* [x] NE
+* [x] LT
+* [x] GT
+* [x] LE
+* [x] GE
 
 ### 逻辑指令
 
-* [ ] AND
-* [ ] OR
-* [ ] NOT
+* [x] AND
+* [x] OR
+* [x] NOT
 
 ### 访存指令
 
-* [ ] LOAD（从内存加载全局/局部变量）
-* [ ] STORE（向内存存储全局/局部变量）
+* [x] LOAD（从内存加载全局/局部变量）
+* [x] STORE（向内存存储全局/局部变量）
 
 ### 跳转指令
 
-* [ ] JMP
-* [ ] BEQ
-* [ ] BNE
+* [x] JMP
+* [x] BEQ
+* [x] BNE
 
 ### 函数指令
 
-* [ ] CALL
-* [ ] PARAM
-* [ ] RET
+* [x] CALL
+* [x] PARAM
+* [x] RET
 
 ### IR Builder
 
-* [ ] Expr → IR
-* [ ] Stmt → IR
-* [ ] Function → IR
+* [x] Expr → IR
+* [x] Stmt → IR
+* [x] Function → IR
 
 ## 输出
 
-* [ ] IR 模块完成
+* [x] IR 模块完成
 
 ---
 
@@ -580,19 +583,19 @@ c:
 
 ## Lexer
 
-* [ ] Token 测试
+* [x] Token 测试
 
 ## Parser
 
-* [ ] AST 测试
+* [x] AST 测试（基础样例）
 
 ## Semantic
 
-* [ ] 语义错误测试
+* [x] 语义错误测试
 
 ## IR
 
-* [ ] IR 生成测试
+* [x] IR 生成测试
 
 ## Backend
 
@@ -660,7 +663,7 @@ c:
 
 ## 工程
 
-* [ ] CMake 正常构建
+* [x] CMake 正常构建
 * [ ] README 完整
 * [ ] 文档完整
 
