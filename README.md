@@ -158,11 +158,11 @@ Flex 读取 `.l` 规则文件，生成词法分析器 C 代码；Bison 读取 `.
 ### 使用任务清单
 
 * [x] 编写 `lexer.l` 文件（正则规则 → Token 定义）→ 占位骨架已创建，完整实现在第三阶段
-* [x] 编写 `parser.y` 文件（ToyC 文法 → 语义动作 → AST 构建）→ 占位骨架已创建，完整实现在第四阶段
+* [x] 编写 `parser.y` 文件（ToyC 文法 → 语义动作 → AST 构建）→ 已完成基础 AST 构建与表达式优先级处理
 * [x] CMake 集成 Flex/Bison（`find_package` 或 `add_custom_command`）
-* [ ] 定义 Token 值联合体（`%union`）和类型声明（`%type`）
-* [ ] 处理 Flex → Bison 的 Token 传递（`yylval`）
-* [ ] 处理运算符优先级与结合性（`%left`/`%right`/`%nonassoc`）
+* [x] 定义 Token 语义值结构和类型声明（`%type`，使用自定义语义值结构替代 `%union`）
+* [x] 处理 Flex → Bison 的 Token 传递（`yylval`）
+* [x] 处理运算符优先级与结合性（`%left`/`%right`/`%nonassoc`）
 * [ ] 处理文法冲突（移进/归约警告 → 调整文法）
 * [ ] 错误恢复策略（`error` 产生式）
 * [ ] 源位置追踪（行号/列号，用于报错）
@@ -216,7 +216,7 @@ SEMICOLON
 
 ### 数字识别
 
-* [x] NUMBER（`-?(0|[1-9][0-9]*)`，拒绝前导零，通过 `yylval.intVal` 传递）
+* [x] NUMBER（`0|[1-9][0-9]*`，拒绝前导零，通过 `yylval.intVal` 传递；负号由 Parser 的一元表达式处理）
 
 ### 运算符识别
 
@@ -253,6 +253,7 @@ SEMICOLON
 ### 测试
 
 * [x] Lexer 单元测试（36 个测试用例覆盖全部类别）
+* [x] 记录 Lexer / Parser 联调 bug → `docs/bug-issue-log.md`
 
 ## 输出
 
@@ -270,46 +271,48 @@ SEMICOLON
 
 ### AST 节点设计
 
-* [ ] Program
-* [ ] FunctionDecl
-* [ ] VarDecl
-* [ ] ConstDecl
+* [x] Program
+* [x] FunctionDecl
+* [x] VarDecl
+* [x] ConstDecl
 
 ### Statement
 
-* [ ] BlockStmt
-* [ ] IfStmt
-* [ ] WhileStmt
-* [ ] ReturnStmt
-* [ ] BreakStmt
-* [ ] ContinueStmt
-* [ ] AssignStmt
-* [ ] DeclStmt（语句块内的局部声明）
+* [x] BlockStmt
+* [x] IfStmt
+* [x] WhileStmt
+* [x] ReturnStmt
+* [x] BreakStmt
+* [x] ContinueStmt
+* [x] AssignStmt
+* [x] DeclStmt（语句块内的局部声明）
 
 ### Expression
 
-* [ ] BinaryExpr
-* [ ] UnaryExpr
-* [ ] CallExpr
-* [ ] IdentifierExpr
-* [ ] NumberExpr
+* [x] BinaryExpr
+* [x] UnaryExpr
+* [x] CallExpr
+* [x] IdentifierExpr
+* [x] NumberExpr
 
 ### Parser
 
-* [ ] 编译单元解析
-* [ ] 函数定义解析
-* [ ] 声明解析
-* [ ] 语句解析
-* [ ] 表达式解析
+* [x] 编译单元解析
+* [x] 函数定义解析
+* [x] 声明解析
+* [x] 语句解析
+* [x] 表达式解析
 
 ### 测试
 
-* [ ] AST 输出测试
-* [ ] 文法覆盖测试
+* [x] AST 输出测试
+* [x] 文法覆盖测试（基础样例：全局声明、函数调用、控制流、表达式优先级）
 
 ## 输出
 
-* [ ] AST 构建完成
+* [x] AST 构建完成
+* [x] Parser 基础测试完成（`tests/parser/test_parser.cpp`）
+* [ ] 本地构建与自动化测试验证（当前环境缺少 `cmake` / `flex` / `bison`）
 
 ---
 
@@ -580,11 +583,11 @@ c:
 
 ## Lexer
 
-* [ ] Token 测试
+* [x] Token 测试
 
 ## Parser
 
-* [ ] AST 测试
+* [x] AST 测试（基础样例）
 
 ## Semantic
 
