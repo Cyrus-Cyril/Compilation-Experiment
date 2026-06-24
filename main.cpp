@@ -21,7 +21,6 @@
 #include "toyc/backend/code_generator.h"
 
 int main(int argc, char* argv[]) {
-    // 解析命令行参数
     bool optFlag = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "-opt") == 0) {
