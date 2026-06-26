@@ -87,11 +87,51 @@ static void test_expressions_and_locals() {
     check(contains(asmText, "neg t1, t0"), "emits unary negation");
 }
 
+static void test_globals_and_control_flow() {
+    std::printf("\n-- Globals And Control Flow --\n");
+
+    IRProgram program;
+    program.globals.push_back({"g", false, 7});
+
+    IRFunction mainFn;
+    mainFn.name = "main";
+    mainFn.instructions.push_back(
+        {IROpcode::LOAD_GLOBAL, {IROperand::reg(0), IROperand::global("g")}});
+    mainFn.instructions.push_back(
+        {IROpcode::STORE_GLOBAL, {IROperand::global("g"), IROperand::reg(0)}});
+    mainFn.instructions.push_back(
+        {IROpcode::BNE, {IROperand::reg(0), IROperand::imm(0), IROperand::label(1)}});
+    mainFn.instructions.push_back({IROpcode::JMP, {IROperand::label(2)}});
+    mainFn.instructions.push_back({IROpcode::LABEL, {IROperand::label(1)}});
+    mainFn.instructions.push_back(
+        {IROpcode::OR, {IROperand::reg(1), IROperand::reg(0), IROperand::imm(0)}});
+    mainFn.instructions.push_back({IROpcode::LABEL, {IROperand::label(2)}});
+    mainFn.instructions.push_back({IROpcode::RET, {IROperand::reg(0)}});
+    program.functions.push_back(std::move(mainFn));
+
+    CodeGenerator gen;
+    std::string asmText = gen.generate(program);
+
+    check(contains(asmText, ".data"), "emits data section");
+    check(contains(asmText, "g:"), "emits global label");
+    check(contains(asmText, ".word 7"), "emits global initializer");
+    check(contains(asmText, "la t0, g"), "loads global address");
+    check(contains(asmText, "lw t1, 0(t0)"), "loads global value");
+    check(contains(asmText, "la t1, g"), "loads global address for store");
+    check(contains(asmText, "sw t0, 0(t1)"), "stores global value");
+    check(contains(asmText, "bne t0, t1, .Lmain_1"), "emits conditional branch");
+    check(contains(asmText, "j .Lmain_2"), "emits jump");
+    check(contains(asmText, ".Lmain_1:"), "emits first label");
+    check(contains(asmText, ".Lmain_2:"), "emits second label");
+    check(contains(asmText, "or t2, t0, t1"), "emits logical or");
+}
+
 int main() {
     std::printf("=== ToyC Backend Unit Tests ===\n\n");
 
     test_minimal_function();
     test_expressions_and_locals();
+    test_globals_and_control_flow();
 
     std::printf("\n==============================\n");
     std::printf("  %d / %d tests passed\n", pass_count, test_count);

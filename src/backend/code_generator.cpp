@@ -20,6 +20,14 @@ int32_t immValue(const IROperand& operand) {
     return std::get<int32_t>(operand.value);
 }
 
+std::string stringValue(const IROperand& operand) {
+    return std::get<std::string>(operand.value);
+}
+
+std::string labelName(const std::string& functionName, const IROperand& operand) {
+    return ".L" + functionName + "_" + std::to_string(std::get<uint32_t>(operand.value));
+}
+
 int align16(int value) {
     return (value + 15) / 16 * 16;
 }
@@ -97,6 +105,21 @@ void storeVReg(std::ostringstream& out, const FunctionLayout& layout,
 std::string CodeGenerator::generate(const IRProgram& program) {
     std::ostringstream out;
 
+    if (!program.globals.empty() || !program.globalNames.empty()) {
+        out << ".data\n";
+        if (!program.globals.empty()) {
+            for (const auto& global : program.globals) {
+                out << global.name << ":\n";
+                out << "    .word " << global.initialValue << "\n";
+            }
+        } else {
+            for (const auto& name : program.globalNames) {
+                out << name << ":\n";
+                out << "    .word 0\n";
+            }
+        }
+    }
+
     out << ".text\n";
     out << ".globl main\n";
 
@@ -121,6 +144,8 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                 case IROpcode::GE:
                 case IROpcode::EQ:
                 case IROpcode::NE:
+                case IROpcode::AND:
+                case IROpcode::OR:
                     if (inst.operands.size() != 3) break;
                     loadOperand(out, layout, inst.operands[1], "t0");
                     loadOperand(out, layout, inst.operands[2], "t1");
@@ -148,6 +173,15 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                             out << "    sub t2, t0, t1\n";
                             out << "    snez t2, t2\n";
                             break;
+                        case IROpcode::AND:
+                            out << "    snez t0, t0\n";
+                            out << "    snez t1, t1\n";
+                            out << "    and t2, t0, t1\n";
+                            break;
+                        case IROpcode::OR:
+                            out << "    or t2, t0, t1\n";
+                            out << "    snez t2, t2\n";
+                            break;
                         default: break;
                     }
                     storeVReg(out, layout, inst.operands[0], "t2");
@@ -173,6 +207,34 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                     if (inst.operands.size() != 2) break;
                     loadOperand(out, layout, inst.operands[1], "t0");
                     out << "    sw t0, " << localSlot(layout, immValue(inst.operands[0])) << "(sp)\n";
+                    break;
+                case IROpcode::LOAD_GLOBAL:
+                    if (inst.operands.size() != 2) break;
+                    out << "    la t0, " << stringValue(inst.operands[1]) << "\n";
+                    out << "    lw t1, 0(t0)\n";
+                    storeVReg(out, layout, inst.operands[0], "t1");
+                    break;
+                case IROpcode::STORE_GLOBAL:
+                    if (inst.operands.size() != 2) break;
+                    loadOperand(out, layout, inst.operands[1], "t0");
+                    out << "    la t1, " << stringValue(inst.operands[0]) << "\n";
+                    out << "    sw t0, 0(t1)\n";
+                    break;
+                case IROpcode::LABEL:
+                    if (inst.operands.size() != 1) break;
+                    out << labelName(fn.name, inst.operands[0]) << ":\n";
+                    break;
+                case IROpcode::JMP:
+                    if (inst.operands.size() != 1) break;
+                    out << "    j " << labelName(fn.name, inst.operands[0]) << "\n";
+                    break;
+                case IROpcode::BEQ:
+                case IROpcode::BNE:
+                    if (inst.operands.size() != 3) break;
+                    loadOperand(out, layout, inst.operands[0], "t0");
+                    loadOperand(out, layout, inst.operands[1], "t1");
+                    out << "    " << (inst.opcode == IROpcode::BEQ ? "beq" : "bne")
+                        << " t0, t1, " << labelName(fn.name, inst.operands[2]) << "\n";
                     break;
                 case IROpcode::RET:
                     if (inst.operands.empty()) {
