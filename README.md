@@ -473,7 +473,7 @@ t2 = a + t1
 
 ### 常量折叠
 
-* [ ] Constant Folding
+* [x] Constant Folding
 
 ```c
 1 + 2 * 3
@@ -487,11 +487,11 @@ t2 = a + t1
 
 ### 常量传播
 
-* [ ] Constant Propagation
+* [x] Constant Propagation
 
 ### 死代码删除
 
-* [ ] Dead Code Elimination
+* [x] Dead Code Elimination
 
 ### 公共子表达式消除
 
@@ -505,7 +505,7 @@ t2 = a + t1
 
 ## 输出
 
-* [ ] Optimizer 完成
+* [x] Optimizer 基础优化完成
 
 ---
 
@@ -618,9 +618,9 @@ c:
 
 ## 检查项
 
-* [ ] 常量折叠
-* [ ] 常量传播
-* [ ] 死代码删除
+* [x] 常量折叠
+* [x] 常量传播
+* [x] 死代码删除
 * [ ] 减少访存
 * [ ] 减少跳转
 * [ ] 简单寄存器分配
