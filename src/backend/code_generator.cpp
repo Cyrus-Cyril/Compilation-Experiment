@@ -3,9 +3,9 @@
 #include "toyc/backend/code_generator.h"
 
 #include <cstdint>
+#include <algorithm>
 #include <sstream>
 #include <string>
-#include <unordered_map>
 #include <variant>
 
 namespace toyc {
@@ -20,6 +20,78 @@ int32_t immValue(const IROperand& operand) {
     return std::get<int32_t>(operand.value);
 }
 
+int align16(int value) {
+    return (value + 15) / 16 * 16;
+}
+
+struct FunctionLayout {
+    int frameSize = 16;
+    int localSize = 0;
+    int vregBase = 0;
+    int raOffset = 12;
+};
+
+void scanOperand(const IROperand& operand, uint32_t& maxReg) {
+    if (operand.kind == OperandKind::VirtualReg) {
+        maxReg = std::max(maxReg, regId(operand));
+    }
+}
+
+FunctionLayout buildLayout(const IRFunction& fn) {
+    uint32_t maxReg = 0;
+    bool hasReg = false;
+    int maxLocalEnd = 0;
+
+    for (const auto& inst : fn.instructions) {
+        for (const auto& operand : inst.operands) {
+            if (operand.kind == OperandKind::VirtualReg) {
+                hasReg = true;
+                scanOperand(operand, maxReg);
+            }
+        }
+
+        if ((inst.opcode == IROpcode::LOAD_LOCAL || inst.opcode == IROpcode::STORE_LOCAL) &&
+            !inst.operands.empty() &&
+            inst.operands[0].kind == OperandKind::Immediate) {
+            maxLocalEnd = std::max(maxLocalEnd, immValue(inst.operands[0]) + 4);
+        }
+    }
+
+    FunctionLayout layout;
+    layout.localSize = align16(maxLocalEnd);
+    layout.vregBase = layout.localSize;
+    int vregSize = hasReg ? static_cast<int>(maxReg + 1) * 4 : 0;
+    layout.frameSize = align16(layout.localSize + vregSize + 4);
+    if (layout.frameSize < 16) layout.frameSize = 16;
+    layout.raOffset = layout.frameSize - 4;
+    return layout;
+}
+
+int localSlot(const FunctionLayout& layout, int irOffset) {
+    (void)layout;
+    return irOffset;
+}
+
+int vregSlot(const FunctionLayout& layout, uint32_t id) {
+    return layout.vregBase + static_cast<int>(id) * 4;
+}
+
+void loadOperand(std::ostringstream& out, const FunctionLayout& layout,
+                 const IROperand& operand, const char* physReg) {
+    if (operand.kind == OperandKind::Immediate) {
+        out << "    li " << physReg << ", " << immValue(operand) << "\n";
+    } else if (operand.kind == OperandKind::VirtualReg) {
+        out << "    lw " << physReg << ", " << vregSlot(layout, regId(operand)) << "(sp)\n";
+    }
+}
+
+void storeVReg(std::ostringstream& out, const FunctionLayout& layout,
+               const IROperand& operand, const char* physReg) {
+    if (operand.kind == OperandKind::VirtualReg) {
+        out << "    sw " << physReg << ", " << vregSlot(layout, regId(operand)) << "(sp)\n";
+    }
+}
+
 }  // namespace
 
 std::string CodeGenerator::generate(const IRProgram& program) {
@@ -29,23 +101,78 @@ std::string CodeGenerator::generate(const IRProgram& program) {
     out << ".globl main\n";
 
     for (const auto& fn : program.functions) {
-        std::unordered_map<uint32_t, int32_t> constRegs;
+        FunctionLayout layout = buildLayout(fn);
         const std::string returnLabel = ".L" + fn.name + "_return";
 
         out << fn.name << ":\n";
-        out << "    addi sp, sp, -16\n";
-        out << "    sw ra, 12(sp)\n";
+        out << "    addi sp, sp, -" << layout.frameSize << "\n";
+        out << "    sw ra, " << layout.raOffset << "(sp)\n";
 
         for (const auto& inst : fn.instructions) {
             switch (inst.opcode) {
                 case IROpcode::ADD:
-                    if (inst.operands.size() == 3 &&
-                        inst.operands[0].kind == OperandKind::VirtualReg &&
-                        inst.operands[1].kind == OperandKind::Immediate &&
-                        inst.operands[2].kind == OperandKind::Immediate) {
-                        constRegs[regId(inst.operands[0])] =
-                            immValue(inst.operands[1]) + immValue(inst.operands[2]);
+                case IROpcode::SUB:
+                case IROpcode::MUL:
+                case IROpcode::DIV:
+                case IROpcode::MOD:
+                case IROpcode::LT:
+                case IROpcode::GT:
+                case IROpcode::LE:
+                case IROpcode::GE:
+                case IROpcode::EQ:
+                case IROpcode::NE:
+                    if (inst.operands.size() != 3) break;
+                    loadOperand(out, layout, inst.operands[1], "t0");
+                    loadOperand(out, layout, inst.operands[2], "t1");
+                    switch (inst.opcode) {
+                        case IROpcode::ADD: out << "    add t2, t0, t1\n"; break;
+                        case IROpcode::SUB: out << "    sub t2, t0, t1\n"; break;
+                        case IROpcode::MUL: out << "    mul t2, t0, t1\n"; break;
+                        case IROpcode::DIV: out << "    div t2, t0, t1\n"; break;
+                        case IROpcode::MOD: out << "    rem t2, t0, t1\n"; break;
+                        case IROpcode::LT:  out << "    slt t2, t0, t1\n"; break;
+                        case IROpcode::GT:  out << "    slt t2, t1, t0\n"; break;
+                        case IROpcode::LE:
+                            out << "    slt t2, t1, t0\n";
+                            out << "    xori t2, t2, 1\n";
+                            break;
+                        case IROpcode::GE:
+                            out << "    slt t2, t0, t1\n";
+                            out << "    xori t2, t2, 1\n";
+                            break;
+                        case IROpcode::EQ:
+                            out << "    sub t2, t0, t1\n";
+                            out << "    seqz t2, t2\n";
+                            break;
+                        case IROpcode::NE:
+                            out << "    sub t2, t0, t1\n";
+                            out << "    snez t2, t2\n";
+                            break;
+                        default: break;
                     }
+                    storeVReg(out, layout, inst.operands[0], "t2");
+                    break;
+                case IROpcode::NEG:
+                    if (inst.operands.size() != 2) break;
+                    loadOperand(out, layout, inst.operands[1], "t0");
+                    out << "    neg t1, t0\n";
+                    storeVReg(out, layout, inst.operands[0], "t1");
+                    break;
+                case IROpcode::NOT:
+                    if (inst.operands.size() != 2) break;
+                    loadOperand(out, layout, inst.operands[1], "t0");
+                    out << "    seqz t1, t0\n";
+                    storeVReg(out, layout, inst.operands[0], "t1");
+                    break;
+                case IROpcode::LOAD_LOCAL:
+                    if (inst.operands.size() != 2) break;
+                    out << "    lw t0, " << localSlot(layout, immValue(inst.operands[1])) << "(sp)\n";
+                    storeVReg(out, layout, inst.operands[0], "t0");
+                    break;
+                case IROpcode::STORE_LOCAL:
+                    if (inst.operands.size() != 2) break;
+                    loadOperand(out, layout, inst.operands[1], "t0");
+                    out << "    sw t0, " << localSlot(layout, immValue(inst.operands[0])) << "(sp)\n";
                     break;
                 case IROpcode::RET:
                     if (inst.operands.empty()) {
@@ -53,9 +180,7 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                     } else if (inst.operands[0].kind == OperandKind::Immediate) {
                         out << "    li a0, " << immValue(inst.operands[0]) << "\n";
                     } else if (inst.operands[0].kind == OperandKind::VirtualReg) {
-                        uint32_t retReg = regId(inst.operands[0]);
-                        auto found = constRegs.find(retReg);
-                        out << "    li a0, " << (found != constRegs.end() ? found->second : 0) << "\n";
+                        out << "    lw a0, " << vregSlot(layout, regId(inst.operands[0])) << "(sp)\n";
                     }
                     out << "    j " << returnLabel << "\n";
                     break;
@@ -65,8 +190,8 @@ std::string CodeGenerator::generate(const IRProgram& program) {
         }
 
         out << returnLabel << ":\n";
-        out << "    lw ra, 12(sp)\n";
-        out << "    addi sp, sp, 16\n";
+        out << "    lw ra, " << layout.raOffset << "(sp)\n";
+        out << "    addi sp, sp, " << layout.frameSize << "\n";
         out << "    ret\n";
     }
 
