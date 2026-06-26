@@ -42,3 +42,46 @@ int main() {
 - 标题: `Lexer NUMBER rule conflicts with unary/binary minus parsing`
 - 标签: `bug`, `frontend`, `parser`
 - Issue 描述重点: 说明“需求示例里的负数 token 化方式”和“表达式文法里的 unary minus”存在冲突，建议以独立 `MINUS` token 方案为准。
+
+---
+
+## ISSUE-002 本机构建工具链不满足当前项目要求
+
+- 时间: 2026-06-26
+- 位置: `CMakeLists.txt`, `src/parser/parser.y`
+- 关联文档: `BUILD.md`, `docs/任务要求.md`
+
+### 现象
+
+当前本机环境缺少 `cmake` 命令，无法直接执行 `cmake -S . -B build`。同时系统自带 `bison` 版本为 2.3，无法识别当前 `parser.y` 中使用的 `%code` 指令。
+
+### 影响
+
+- 不能在本机通过 CMake 完整验证 `toyc` 和各单元测试目标。
+- Flex 可以生成 lexer，但 Bison 生成 parser 会失败，导致前端测试无法在当前环境闭环。
+- 后续阶段实现前需要在可用工具链环境中复核构建基线。
+
+### 复现命令
+
+```bash
+command -v cmake
+bison --version
+bison -d -o /tmp/parser.tab.cpp src/parser/parser.y
+```
+
+### 排查结果
+
+- `command -v cmake` 无输出。
+- `bison --version` 显示 `GNU Bison 2.3`。
+- `bison -d ... src/parser/parser.y` 报错：`invalid directive: %code`。
+
+### 本次处理
+
+- 先记录为环境类 Issue，不修改前端实现。
+- 后续在安装新版 CMake/Bison 后重新执行完整构建与测试。
+
+### 建议同步到 GitHub Issue
+
+- 标题: `Local toolchain cannot build current Flex/Bison pipeline`
+- 标签: `bug`, `build`, `toolchain`
+- Issue 描述重点: 说明本机缺少 CMake 且 Bison 2.3 过旧；建议团队统一使用新版 CMake 和 Bison，或在 CI 中固定工具链版本。
