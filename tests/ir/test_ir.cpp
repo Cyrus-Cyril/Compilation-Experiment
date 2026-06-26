@@ -254,6 +254,27 @@ static void test_globals() {
             "int g = 42;\nint main() { return g; }");
         check(!prog.globalNames.empty(), "globalNames is populated");
         check(prog.globalNames[0] == "g", "global name is 'g'");
+        check(!prog.globals.empty(), "globals is populated");
+        check(prog.globals[0].name == "g", "global object name is 'g'");
+        check(!prog.globals[0].isConst, "global object records variable kind");
+        check(prog.globals[0].initialValue == 42, "global initializer is preserved");
+    }
+
+    {
+        IRProgram prog = buildIR(
+            "const int N = 6 * 7;\nint main() { return N; }");
+        check(prog.globals.size() == 1, "global const is recorded");
+        check(prog.globals[0].name == "N", "global const name is 'N'");
+        check(prog.globals[0].isConst, "global object records const kind");
+        check(prog.globals[0].initialValue == 42, "global const initializer is folded");
+    }
+
+    {
+        IRProgram prog = buildIR(
+            "const int N = 40;\nint g = N + 2;\nint main() { return g; }");
+        check(prog.globals.size() == 2, "multiple globals are recorded");
+        check(prog.globals[1].name == "g", "second global name is 'g'");
+        check(prog.globals[1].initialValue == 42, "global initializer can reference const");
     }
 
     {

@@ -46,8 +46,18 @@ struct IRFunction {
     std::vector<IRInstruction> instructions;
 };
 
+/// 全局对象信息（用于后端生成 .data 段）
+struct IRGlobal {
+    std::string name;
+    bool isConst = false;
+    int32_t initialValue = 0;
+};
+
 /// 整个程序的 IR（按函数组织）
 struct IRProgram {
+    /// 全局变量/常量定义
+    std::vector<IRGlobal> globals;
+
     std::vector<IRFunction> functions;
 
     /// 获取全局变量名列表（用于 .data 段生成）

@@ -76,6 +76,7 @@ private:
     void genDecl(ASTNode* decl);
     void genVarDecl(VarDecl* decl);
     void genConstDecl(ConstDecl* decl);
+    int32_t evalGlobalInit(ExprNode* expr);
 
     // ---- 函数 IR 生成 ----
     void genFunc(FuncDef* func);
@@ -111,9 +112,11 @@ IRProgram IRBuilderImpl::build(CompUnit* ast, SymbolTable* symTable) {
     for (const auto& elem : ast->elements) {
         if (elem->kind() == NodeKind::VarDecl) {
             auto* vd = static_cast<VarDecl*>(elem.get());
+            program_.globals.push_back({vd->name, false, evalGlobalInit(vd->initExpr.get())});
             program_.globalNames.push_back(vd->name);
         } else if (elem->kind() == NodeKind::ConstDecl) {
             auto* cd = static_cast<ConstDecl*>(elem.get());
+            program_.globals.push_back({cd->name, true, evalGlobalInit(cd->initExpr.get())});
             program_.globalNames.push_back(cd->name);
         }
     }
@@ -448,6 +451,51 @@ void IRBuilderImpl::genConstDecl(ConstDecl* decl) {
     } else {
         emit(IROpcode::STORE_LOCAL, {IROperand::imm(offset), IROperand::reg(initReg)});
     }
+}
+
+int32_t IRBuilderImpl::evalGlobalInit(ExprNode* expr) {
+    if (auto* num = dynamic_cast<NumberExpr*>(expr)) {
+        return static_cast<int32_t>(num->value);
+    }
+
+    if (auto* id = dynamic_cast<IdExpr*>(expr)) {
+        Symbol* sym = symTable_->lookup(id->name);
+        if (sym && sym->kind == SymbolKind::Constant) {
+            return static_cast<int32_t>(sym->constValue);
+        }
+        return 0;
+    }
+
+    if (auto* unary = dynamic_cast<UnaryExpr*>(expr)) {
+        int32_t operand = evalGlobalInit(unary->operand.get());
+        switch (unary->op) {
+            case UnaryOp::POS: return operand;
+            case UnaryOp::NEG: return -operand;
+            case UnaryOp::NOT: return operand ? 0 : 1;
+        }
+    }
+
+    if (auto* bin = dynamic_cast<BinaryExpr*>(expr)) {
+        int32_t left = evalGlobalInit(bin->left.get());
+        int32_t right = evalGlobalInit(bin->right.get());
+        switch (bin->op) {
+            case BinaryOp::ADD: return left + right;
+            case BinaryOp::SUB: return left - right;
+            case BinaryOp::MUL: return left * right;
+            case BinaryOp::DIV: return right != 0 ? left / right : 0;
+            case BinaryOp::MOD: return right != 0 ? left % right : 0;
+            case BinaryOp::LT:  return left < right ? 1 : 0;
+            case BinaryOp::GT:  return left > right ? 1 : 0;
+            case BinaryOp::LE:  return left <= right ? 1 : 0;
+            case BinaryOp::GE:  return left >= right ? 1 : 0;
+            case BinaryOp::EQ:  return left == right ? 1 : 0;
+            case BinaryOp::NE:  return left != right ? 1 : 0;
+            case BinaryOp::AND: return (left && right) ? 1 : 0;
+            case BinaryOp::OR:  return (left || right) ? 1 : 0;
+        }
+    }
+
+    return 0;
 }
 
 // ============================================================
