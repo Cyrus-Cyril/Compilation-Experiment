@@ -7,6 +7,7 @@
 #include <sstream>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace toyc {
 
@@ -36,6 +37,7 @@ struct FunctionLayout {
     int frameSize = 16;
     int localSize = 0;
     int vregBase = 0;
+    int vregCount = 0;
     int raOffset = 12;
 };
 
@@ -68,7 +70,8 @@ FunctionLayout buildLayout(const IRFunction& fn) {
     FunctionLayout layout;
     layout.localSize = align16(maxLocalEnd);
     layout.vregBase = layout.localSize;
-    int vregSize = hasReg ? static_cast<int>(maxReg + 1) * 4 : 0;
+    layout.vregCount = hasReg ? static_cast<int>(maxReg + 1) : 0;
+    int vregSize = layout.vregCount * 4;
     layout.frameSize = align16(layout.localSize + vregSize + 4);
     if (layout.frameSize < 16) layout.frameSize = 16;
     layout.raOffset = layout.frameSize - 4;
@@ -126,10 +129,14 @@ std::string CodeGenerator::generate(const IRProgram& program) {
     for (const auto& fn : program.functions) {
         FunctionLayout layout = buildLayout(fn);
         const std::string returnLabel = ".L" + fn.name + "_return";
+        std::vector<IROperand> pendingParams;
 
         out << fn.name << ":\n";
         out << "    addi sp, sp, -" << layout.frameSize << "\n";
         out << "    sw ra, " << layout.raOffset << "(sp)\n";
+        for (int i = 0; i < layout.vregCount && i < 8; ++i) {
+            out << "    sw a" << i << ", " << vregSlot(layout, static_cast<uint32_t>(i)) << "(sp)\n";
+        }
 
         for (const auto& inst : fn.instructions) {
             switch (inst.opcode) {
@@ -235,6 +242,21 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                     loadOperand(out, layout, inst.operands[1], "t1");
                     out << "    " << (inst.opcode == IROpcode::BEQ ? "beq" : "bne")
                         << " t0, t1, " << labelName(fn.name, inst.operands[2]) << "\n";
+                    break;
+                case IROpcode::PARAM:
+                    if (inst.operands.size() == 1) {
+                        pendingParams.push_back(inst.operands[0]);
+                    }
+                    break;
+                case IROpcode::CALL:
+                    if (inst.operands.size() != 2) break;
+                    for (size_t i = 0; i < pendingParams.size() && i < 8; ++i) {
+                        std::string argReg = "a" + std::to_string(i);
+                        loadOperand(out, layout, pendingParams[i], argReg.c_str());
+                    }
+                    out << "    call " << stringValue(inst.operands[1]) << "\n";
+                    storeVReg(out, layout, inst.operands[0], "a0");
+                    pendingParams.clear();
                     break;
                 case IROpcode::RET:
                     if (inst.operands.empty()) {

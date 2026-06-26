@@ -126,12 +126,76 @@ static void test_globals_and_control_flow() {
     check(contains(asmText, "or t2, t0, t1"), "emits logical or");
 }
 
+static void test_function_calls() {
+    std::printf("\n-- Function Calls --\n");
+
+    IRProgram program;
+
+    IRFunction addFn;
+    addFn.name = "add";
+    addFn.instructions.push_back(
+        {IROpcode::STORE_LOCAL, {IROperand::imm(0), IROperand::reg(0)}});
+    addFn.instructions.push_back(
+        {IROpcode::STORE_LOCAL, {IROperand::imm(4), IROperand::reg(1)}});
+    addFn.instructions.push_back(
+        {IROpcode::LOAD_LOCAL, {IROperand::reg(2), IROperand::imm(0)}});
+    addFn.instructions.push_back(
+        {IROpcode::LOAD_LOCAL, {IROperand::reg(3), IROperand::imm(4)}});
+    addFn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(4), IROperand::reg(2), IROperand::reg(3)}});
+    addFn.instructions.push_back({IROpcode::RET, {IROperand::reg(4)}});
+    program.functions.push_back(std::move(addFn));
+
+    IRFunction mainFn;
+    mainFn.name = "main";
+    mainFn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(0), IROperand::imm(0), IROperand::imm(1)}});
+    mainFn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(1), IROperand::imm(0), IROperand::imm(3)}});
+    mainFn.instructions.push_back({IROpcode::PARAM, {IROperand::reg(0)}});
+    mainFn.instructions.push_back({IROpcode::PARAM, {IROperand::reg(1)}});
+    mainFn.instructions.push_back({IROpcode::CALL, {IROperand::reg(2), IROperand::func("add")}});
+    mainFn.instructions.push_back({IROpcode::RET, {IROperand::reg(2)}});
+    program.functions.push_back(std::move(mainFn));
+
+    CodeGenerator gen;
+    std::string asmText = gen.generate(program);
+
+    check(contains(asmText, "add:"), "emits callee label");
+    check(contains(asmText, "sw a0, 16(sp)"), "callee saves first argument register");
+    check(contains(asmText, "sw a1, 20(sp)"), "callee saves second argument register");
+    check(contains(asmText, "lw a0,"), "loads first argument before call");
+    check(contains(asmText, "lw a1,"), "loads second argument before call");
+    check(contains(asmText, "call add"), "emits call instruction");
+    check(contains(asmText, "sw a0,"), "stores call return value");
+}
+
+static void test_recursive_call_shape() {
+    std::printf("\n-- Recursive Call Shape --\n");
+
+    IRProgram program;
+    IRFunction factFn;
+    factFn.name = "fact";
+    factFn.instructions.push_back({IROpcode::PARAM, {IROperand::reg(0)}});
+    factFn.instructions.push_back({IROpcode::CALL, {IROperand::reg(1), IROperand::func("fact")}});
+    factFn.instructions.push_back({IROpcode::RET, {IROperand::reg(1)}});
+    program.functions.push_back(std::move(factFn));
+
+    CodeGenerator gen;
+    std::string asmText = gen.generate(program);
+
+    check(contains(asmText, "fact:"), "emits recursive function label");
+    check(contains(asmText, "call fact"), "emits recursive call");
+}
+
 int main() {
     std::printf("=== ToyC Backend Unit Tests ===\n\n");
 
     test_minimal_function();
     test_expressions_and_locals();
     test_globals_and_control_flow();
+    test_function_calls();
+    test_recursive_call_shape();
 
     std::printf("\n==============================\n");
     std::printf("  %d / %d tests passed\n", pass_count, test_count);
