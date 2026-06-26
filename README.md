@@ -610,7 +610,8 @@ c:
 
 ## 输出
 
-* [ ] 测试报告
+* [x] 集成测试样例与端到端测试目标（`tests/integration/*.tc` + `tests/integration/test_integration.cpp`）
+* [ ] 基于 RISC-V 工具链的真实运行结果测试报告
 
 ---
 

@@ -152,9 +152,24 @@ add_executable(test_optimizer
 target_include_directories(test_optimizer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(test_optimizer PRIVATE toyc_optimize)
 
+add_executable(test_integration
+    tests/integration/test_integration.cpp
+)
+target_include_directories(test_integration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_definitions(test_integration PRIVATE TOYC_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_integration PRIVATE
+    toyc_backend
+    toyc_optimize
+    toyc_ir
+    toyc_semantic
+    toyc_parser
+    toyc_lexer
+)
+
 add_test(NAME lexer_unit COMMAND test_lexer)
 add_test(NAME parser_unit COMMAND test_parser)
 add_test(NAME semantic_unit COMMAND test_semantic)
 add_test(NAME ir_unit COMMAND test_ir)
 add_test(NAME backend_unit COMMAND test_backend)
 add_test(NAME optimizer_unit COMMAND test_optimizer)
+add_test(NAME integration_unit COMMAND test_integration)
