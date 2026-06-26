@@ -1,0 +1,6 @@
+const int BASE = 40;
+int g = BASE + 2;
+
+int main() {
+    return g;
+}

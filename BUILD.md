@@ -110,91 +110,41 @@ cmake --build build -j 8
 ./build/toyc < test.tc
 ```
 
-#### 1.验证 Lexer
+#### 1. 验证完整编译输出
 
-项目根目录提供了综合测试文件 `test.tc`，覆盖全部关键字、运算符、分隔符、
-数字（含负数/零）、标识符、注释和非法字符场景：
+项目根目录提供了综合测试文件 `test.tc`；当前 `toyc` 默认执行完整编译管线并输出 RISC-V32 汇编：
 
 ```bash
-# 运行词法分析，查看完整 Token 输出
-.\build\toyc.exe < test.tc
-
-# 将 Token 输出保存到文件，错误信息分开查看
-.\build\toyc < test.tc > tokens.txt 2> errors.txt
+# 生成汇编
+./build/toyc < test.tc > output.s
 ```
 
-预期结果：
-
-- 正常 Token 全部正确识别（每行一个 `TYPE` 或 `TYPE(值)`）
-- 非法字符 `@` 输出到 stderr：
-  ```
-  Error(line:col): illegal character '@'
-  ```
-- 返回码 0（词法错误不终止编译）
+如需验证单个模块，优先运行 CTest 或对应单元测试目标。
 
 ---
 
 ## 模块独立调试
 
-以下方式允许单独运行某个模块，验证其产出是否正确，适合开发阶段逐模块排查问题。
-
-### 词法分析器（Lexer）
-
-读取 ToyC 源码，输出 Token 流（每行一个 Token，格式 `TYPE` 或 `TYPE(值)`）：
+当前主程序不提供 `-ast`、`-semantic`、`-ir` 等调试输出参数；模块验证通过单元测试完成：
 
 ```bash
-# 交互式输入
-./build/toyc
-# 输入源码后按 Ctrl+Z 回车结束
+# 全部已注册单元测试
+ctest --test-dir build --output-on-failure
 
-# 从文件重定向
-./build/toyc < test.tc
-
-# 文件重定向，仅保留 Token 输出（错误信息送 stderr，可分开查看）
-./build/toyc < test.tc > tokens.txt 2> errors.txt
+# 或单独运行
+./build/test_lexer
+./build/test_parser
+./build/test_semantic
+./build/test_ir
+./build/test_backend
 ```
 
-输出示例（输入 `int a = 42;`）：
+端到端样例位于 `tests/integration/`，文件名中的 `retN` 表示期望退出码为 `N`。
 
-```
-INT
-ID(a)
-ASSIGN
-NUMBER(42)
-SEMICOLON
-```
-
-非法字符示例（输出到 stderr）：
-
-```
-Error(1:9): illegal character '@'
-```
-
-### 语法分析器（Parser）← 待实现
+### 优化器
 
 ```bash
-# 读取 ToyC 源码，输出 AST
-./build/toyc -ast < test.tc
-```
-
-### 语义分析器（Semantic Analyzer）← 待实现
-
-```bash
-# 读取 ToyC 源码，输出符号表信息
-./build/toyc -semantic < test.tc
-```
-
-### IR 生成器 ← 待实现
-
-```bash
-# 读取 ToyC 源码，输出三地址码 IR
-./build/toyc -ir < test.tc
-```
-
-### 优化器 ← 待实现
-
-```bash
-# 读取 ToyC 源码，输出优化后的 IR
+# `-opt` 当前会启用 Optimizer 入口；未实现的优化会保持 IR 不变
 ./build/toyc -opt < test.tc
 ```
 
