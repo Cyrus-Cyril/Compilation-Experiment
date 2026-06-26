@@ -140,7 +140,14 @@ add_executable(test_ir
 target_include_directories(test_ir PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(test_ir PRIVATE toyc_ir toyc_parser toyc_lexer)
 
+add_executable(test_backend
+    tests/backend/test_backend.cpp
+)
+target_include_directories(test_backend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(test_backend PRIVATE toyc_backend)
+
 add_test(NAME lexer_unit COMMAND test_lexer)
 add_test(NAME parser_unit COMMAND test_parser)
 add_test(NAME semantic_unit COMMAND test_semantic)
 add_test(NAME ir_unit COMMAND test_ir)
+add_test(NAME backend_unit COMMAND test_backend)
