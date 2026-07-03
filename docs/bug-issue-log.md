@@ -64,7 +64,7 @@ int main() {
 - `f17_complex_expressions`：错误输出 → 通过（ISSUE-003e 已修复）
 - `f30_short_circuit_global_side_effect`：错误输出 → 通过（ISSUE-003i 已修复）
 - `f06_break_continue`：错误输出 → 通过（ISSUE-003a 已修复）
-- `f09_func_name`：编译器异常 → 已修复（ISSUE-003c：`checkIfReturnsOnAllPaths` 新增 thenStmt 为 IfStmt 的处理）
+- `f09_func_name`：编译器异常 → 已修复（ISSUE-003c：`checkStmtReturns` 通用辅助函数 + 嵌套 IfStmt + WhileStmt 无限循环处理）
 - `f15_multiple_return_paths`：通过（验证嵌套 if 无花括号场景未被影响）
 
 ### 详细 Issue
@@ -362,12 +362,13 @@ if (s->thenStmt->kind() == NodeKind::BlockStmt) {
 
 ### 状态
 
-- 当前: 已修复（最终简化版本）
+- 当前: 已修复（最终完整版本）
 - 修复版本: 
   - 第一次修复：在 `checkIfReturnsOnAllPaths` 的 thenStmt 分支检查中新增 `else if (s->thenStmt->kind() == NodeKind::IfStmt)` 分支，递归调用 `checkIfReturnsOnAllPaths` 处理嵌套 IfStmt
-  - 第二次优化：重构整个 return 路径检查逻辑，新增 `checkStmtReturns` 辅助函数
-  - 第三次完善：在 `checkIfReturnsOnAllPaths` 中显式处理所有情况
-  - 第四次简化（本次）：回到最简单直接的实现，移除辅助函数，只保留 `checkReturnOnAllPaths` 和 `checkIfReturnsOnAllPaths`，显式处理所有三种可能的语句类型，确保代码清晰无歧义
+  - 第二次优化：重构整个 return 路径检查逻辑，新增 `checkStmtReturns` 辅助函数，统一处理所有类型的语句
+  - 第三次完善：在 `checkIfReturnsOnAllPaths` 中显式处理 thenStmt 和 elseStmt 的所有情况
+  - 第四次简化：回到最简单直接的实现，移除辅助函数，`checkReturnOnAllPaths` 和 `checkIfReturnsOnAllPaths` 显式处理三种可能的语句类型
+  - 第五次完善（本次）：新增通用辅助函数 `checkStmtReturns`，使用 switch 处理所有语句类型；新增 `WhileStmt` 支持——当 while 条件为常量非零时（无限循环），递归检查循环体是否保证返回；简化 `checkReturnOnAllPaths` 和 `checkIfReturnsOnAllPaths` 委托给 `checkStmtReturns`，代码更健壮、可维护性更高
 - 验证日期: 2026-07-04
 
 ---

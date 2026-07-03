@@ -61,6 +61,7 @@ private:
     ExprType visitNumberExpr(void* expr);
 
     // ---- 辅助方法 ----
+    bool checkStmtReturns(void* stmt);
     bool checkReturnOnAllPaths(void* block);
     bool checkIfReturnsOnAllPaths(void* ifStmt);
     std::optional<int> evalConstExpr(void* expr);
