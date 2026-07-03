@@ -87,19 +87,48 @@ int vregSlot(const FunctionLayout& layout, uint32_t id) {
     return layout.vregBase + static_cast<int>(id) * 4;
 }
 
+void emitLoadSP(std::ostringstream& out, const char* rd, int offset) {
+    if (offset >= -2048 && offset <= 2047) {
+        out << "    lw " << rd << ", " << offset << "(sp)\n";
+    } else {
+        out << "    li t3, " << offset << "\n";
+        out << "    add t3, sp, t3\n";
+        out << "    lw " << rd << ", 0(t3)\n";
+    }
+}
+
+void emitStoreSP(std::ostringstream& out, const char* rs, int offset) {
+    if (offset >= -2048 && offset <= 2047) {
+        out << "    sw " << rs << ", " << offset << "(sp)\n";
+    } else {
+        out << "    li t3, " << offset << "\n";
+        out << "    add t3, sp, t3\n";
+        out << "    sw " << rs << ", 0(t3)\n";
+    }
+}
+
+void emitAdjustSP(std::ostringstream& out, int amount, bool isSub) {
+    if (amount <= 2047) {
+        out << "    addi sp, sp, " << (isSub ? -amount : amount) << "\n";
+    } else {
+        out << "    li t2, " << amount << "\n";
+        out << "    " << (isSub ? "sub" : "add") << " sp, sp, t2\n";
+    }
+}
+
 void loadOperand(std::ostringstream& out, const FunctionLayout& layout,
                  const IROperand& operand, const char* physReg) {
     if (operand.kind == OperandKind::Immediate) {
         out << "    li " << physReg << ", " << immValue(operand) << "\n";
     } else if (operand.kind == OperandKind::VirtualReg) {
-        out << "    lw " << physReg << ", " << vregSlot(layout, regId(operand)) << "(sp)\n";
+        emitLoadSP(out, physReg, vregSlot(layout, regId(operand)));
     }
 }
 
 void storeVReg(std::ostringstream& out, const FunctionLayout& layout,
                const IROperand& operand, const char* physReg) {
     if (operand.kind == OperandKind::VirtualReg) {
-        out << "    sw " << physReg << ", " << vregSlot(layout, regId(operand)) << "(sp)\n";
+        emitStoreSP(out, physReg, vregSlot(layout, regId(operand)));
     }
 }
 
@@ -132,10 +161,11 @@ std::string CodeGenerator::generate(const IRProgram& program) {
         std::vector<IROperand> pendingParams;
 
         out << fn.name << ":\n";
-        out << "    addi sp, sp, -" << layout.frameSize << "\n";
-        out << "    sw ra, " << layout.raOffset << "(sp)\n";
+        emitAdjustSP(out, layout.frameSize, true);
+        emitStoreSP(out, "ra", layout.raOffset);
         for (int i = 0; i < layout.vregCount && i < 8; ++i) {
-            out << "    sw a" << i << ", " << vregSlot(layout, static_cast<uint32_t>(i)) << "(sp)\n";
+            std::string reg = "a" + std::to_string(i);
+            emitStoreSP(out, reg.c_str(), vregSlot(layout, static_cast<uint32_t>(i)));
         }
 
         for (const auto& inst : fn.instructions) {
@@ -207,13 +237,13 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                     break;
                 case IROpcode::LOAD_LOCAL:
                     if (inst.operands.size() != 2) break;
-                    out << "    lw t0, " << localSlot(layout, immValue(inst.operands[1])) << "(sp)\n";
+                    emitLoadSP(out, "t0", localSlot(layout, immValue(inst.operands[1])));
                     storeVReg(out, layout, inst.operands[0], "t0");
                     break;
                 case IROpcode::STORE_LOCAL:
                     if (inst.operands.size() != 2) break;
                     loadOperand(out, layout, inst.operands[1], "t0");
-                    out << "    sw t0, " << localSlot(layout, immValue(inst.operands[0])) << "(sp)\n";
+                    emitStoreSP(out, "t0", localSlot(layout, immValue(inst.operands[0])));
                     break;
                 case IROpcode::LOAD_GLOBAL:
                     if (inst.operands.size() != 2) break;
@@ -264,7 +294,7 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                     } else if (inst.operands[0].kind == OperandKind::Immediate) {
                         out << "    li a0, " << immValue(inst.operands[0]) << "\n";
                     } else if (inst.operands[0].kind == OperandKind::VirtualReg) {
-                        out << "    lw a0, " << vregSlot(layout, regId(inst.operands[0])) << "(sp)\n";
+                        emitLoadSP(out, "a0", vregSlot(layout, regId(inst.operands[0])));
                     }
                     out << "    j " << returnLabel << "\n";
                     break;
@@ -274,8 +304,8 @@ std::string CodeGenerator::generate(const IRProgram& program) {
         }
 
         out << returnLabel << ":\n";
-        out << "    lw ra, " << layout.raOffset << "(sp)\n";
-        out << "    addi sp, sp, " << layout.frameSize << "\n";
+        emitLoadSP(out, "ra", layout.raOffset);
+        emitAdjustSP(out, layout.frameSize, false);
         out << "    ret\n";
     }
 
