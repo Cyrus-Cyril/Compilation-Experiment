@@ -57,8 +57,11 @@ int main() {
 |---|---|---|
 | **通过** | 22/30 | 功能正确，得分 3.33 |
 | **错误输出** | 4 | 编译器静默完成，生成代码执行结果错误 |
-| **编译器异常** | 2 | 编译器内部崩溃（segfault / uncaught exception） |
+| **编译器异常** | 1 | 编译器内部崩溃（segfault / uncaught exception） |
 | **汇编错误** | 3 | 生成了 RISC-V 汇编，但无法通过汇编器 |
+| **语义错误** | 1 | 编译器报语义错误退出（ISSUE-003j，`checkReturnOnAllPaths` 误报 else-if 链） |
+
+**注**: ISSUE-003b 的原始编译器异常已被 ISSUE-003a 修复，相应用例目前表现为语义误报（详见 ISSUE-003j）|
 
 ### 详细 Issue
 
@@ -233,14 +236,32 @@ genCondExpr(expr->left.get(), trueLabel, midCheck);    // 正确：A=true→true
 
 #### ISSUE-003b 短路求值导致编译器异常
 
+- 时间: 2026-06-22（原始记录）；2026-07-03（更新）
+- 位置: `src/ir/ir_builder.cpp`（原崩溃根因，已由 ISSUE-003a 修复）
+- 关联文档: `docs/任务要求.md`, `docs/design/ir_design.md`
 - 用例: `f08_short_circuit`
-- 现象: **编译器异常** — 编译器内部崩溃（segfault / exception），未完成编译
-- 可能原因: 短路求值展开为条件跳转时，IR 生成了对空指针或无效标签的引用
-- 复现输入: `tests/semantic/f08_short_circuit.tc`
-- 排查建议:
-  1. 用 `-fsanitize=address` 编译编译器后重新运行，定位崩溃点
-  2. 检查 `&&` / `||` 短路展开的 IR 生成代码，确认标签分配和条件跳转逻辑
-  3. 确认 `IdExpr::symbol` 指针在短路求值路径上被正确回填
+
+### 现象（原始）
+
+**编译器异常** — 编译器内部崩溃（segfault / exception），未完成编译
+
+### 影响（原始）
+
+短路求值表达式导致编译器崩溃，阻断编译流程
+
+### 状态更新
+
+- 原始崩溃问题已被 ISSUE-003a（AND/OR 标签颠倒修复）解决
+- 评测系统上该用例现在表现为 **语义错误**: `Error(1:1): non-void function 'main' does not return a value on all control paths`
+- 该语义误报的根因详见 **ISSUE-003j**（`checkReturnOnAllPaths` 不处理 else-if 链）
+
+### 复现输入（原始）
+
+参见 `tests/semantic/f08_short_circuit.tc`（评测系统上的版本，本地不可用）
+
+### 状态
+
+- 当前: 已修复（原始编译器异常不再存在）
 
 ---
 
@@ -330,6 +351,90 @@ genCondExpr(expr->left.get(), trueLabel, midCheck);    // 正确：A=true→true
   1. 确认 `&&` / `||` 短路展开时，全局变量 `STORE_GLOBAL` 指令是否被正确放置在跳转的合适分支中
   2. dump IR 并检查全局变量的 `LOAD_GLOBAL` / `STORE_GLOBAL` 指令顺序
   3. 与 f08 短路求值的基础版本比对，看加入全局变量后出了什么问题
+
+#### ISSUE-003j `checkReturnOnAllPaths` 不处理 else-if（IfStmt 作为 elseStmt）导致 return 路径误报
+
+- 时间: 2026-07-03
+- 位置: `src/semantic/semantic_analyzer.cpp:390-428`
+- 关联文档: `docs/任务要求.md`（"int 函数必须在每一条可能的执行路径上通过 return 语句返回一个 int 类型的值"）
+- 用例: `f08_short_circuit`（评测系统用例，ISSUE-003b 的原始崩溃修复后暴露的新问题）
+
+### 现象
+
+对于使用了 else-if 链的 `int` 函数，即使所有控制路径都包含 `return` 语句，语义分析器也会误报：
+```
+Error(1:1): non-void function 'main' does not return a value on all control paths
+```
+
+### 影响
+
+- 所有含 else-if 链结构的 `int` 类型函数被错误阻断编译
+- 评测用例 `f08_short_circuit` 因此失败（原始崩溃已由 ISSUE-003a 修复，但修复后暴露出此语义误报）
+- 此 Bug 与短路求值本身无关，但与含有短路求值条件的 else-if 链测试用例恰好重叠
+
+### 复现输入
+
+最小复现（`tests/debug/b15c_minimal_else_if.tc`）：
+
+```c
+int main() {
+    if (1) {
+        return 1;
+    } else if (1) {
+        return 2;
+    } else {
+        return 0;
+    }
+}
+```
+
+### 排查过程
+
+1. **确认错误现象**：`f08_short_circuit` 评测用例在 ISSUE-003a 修复后不再崩溃，但报语义错误 `Error(1:1): non-void function 'main' does not return a value on all control paths`
+
+2. **检查语义分析器**：定位到 `checkReturnOnAllPaths` 函数是执行 return 路径检查的唯一入口
+
+3. **构造边界测试**：
+   - 简单 if-else（有 return）→ 通过 ✅
+   - 简单 if-else（无 return）→ 正确报错 ✅
+   - else-if 链（所有路径都有 return）→ 误报 ❌
+   - else-if 链（不含短路求值）→ 同样误报 ❌（确认与短路求值无关）
+
+4. **分析 `checkReturnOnAllPaths` 逻辑**：函数只检查函数体 `BlockStmt` 中最后一个语句。如果最后一个语句是 `IfStmt` 且有 `elseStmt`，则对 then/else 分别检查：
+   - `thenStmt` 是 `BlockStmt` → 递归检查
+   - `thenStmt` 是 `ReturnStmt` → 标记 true
+   - `elseStmt` 是 `BlockStmt` → 递归检查
+   - `elseStmt` 是 `ReturnStmt` → 标记 true
+   - **缺失**: `elseStmt` 是 `IfStmt`（即 else-if 的情况）未做任何处理，`elseReturns` 保持默认 `false`
+
+5. **验证 AST 结构**：Parser 将 `else if (cond) { ... }` 解析为外层 `IfStmt` 的 `elseStmt` 指向一个内层 `IfStmt` 节点。`IfStmt` 的 `elseStmt` 类型是 `std::unique_ptr<ASTNode>`，其 `kind()` 为 `NodeKind::IfStmt`。
+
+### 根因定位
+
+- **模块**: `src/semantic/semantic_analyzer.cpp`
+- **函数**: `SemanticAnalyzer::checkReturnOnAllPaths`（第 390-428 行）
+- **根本原因**: `checkReturnOnAllPaths` 在处理最后一个语句为 `IfStmt` 且有 `elseStmt` 时，仅处理了 `elseStmt` 为 `BlockStmt` 或 `ReturnStmt` 两种情况，遗漏了 `elseStmt` 为 `IfStmt`（else-if 链）的情况。当 `elseStmt->kind()` 是 `NodeKind::IfStmt` 时，`elseReturns` 保持默认值 `false`，导致 `thenReturns && elseReturns` 结果为 `false`，误报 return 路径缺失。
+
+### 修复建议（方向性）
+
+**文件**: `src/semantic/semantic_analyzer.cpp:390-428`
+
+在 `checkReturnOnAllPaths` 的 `IfStmt` 分支中，为 `elseStmt` 增加对 `NodeKind::IfStmt` 的处理：
+
+1. 当 `elseStmt->kind() == NodeKind::IfStmt` 时，应递归调用一个能处理 `IfStmt` 的辅助函数
+2. 具体来说，可以提取 `IfStmt` 的 else-if 检查逻辑到递归函数 `checkIfReturnsOnAllPaths(IfStmt*)`，该函数检查 if-else 链中每个分支的 return 情况
+3. 对于 `else if (cond) { return ... } else { return ... }` 结构，需要递归遍历整个 else-if 链
+4. 注意处理边界情况：else-if 链中的 if 可能没有 else（此时返回 false 是正确的）
+
+同时建议扩展 `checkReturnOnAllPaths` 对更多语句类型的支持（如 `WhileStmt` 中 break 是否影响 return 路径等）。
+
+### 状态
+
+- 当前: 已修复
+- 修复版本: 在 `SemanticAnalyzer` 中新增 `checkIfReturnsOnAllPaths(IfStmt*)` 辅助方法，递归处理 if-else 链的 return 路径检查。`checkReturnOnAllPaths` 的 `IfStmt` 分支委托给该方法。当 `elseStmt` 为 `IfStmt`（else-if）时，`checkIfReturnsOnAllPaths` 递归调用自身，确保整个 else-if 链的所有分支都被检查。同时对 then/else 中 `ReturnStmt`、`BlockStmt`、`IfStmt` 三种情况均做处理。
+- 验证日期: 2026-07-03
+
+---
 
 ## ISSUE-002 本机构建工具链不满足当前项目要求
 

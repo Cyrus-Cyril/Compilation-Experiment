@@ -62,6 +62,7 @@ private:
 
     // ---- 辅助方法 ----
     bool checkReturnOnAllPaths(void* block);
+    bool checkIfReturnsOnAllPaths(void* ifStmt);
     std::optional<int> evalConstExpr(void* expr);
 };
 

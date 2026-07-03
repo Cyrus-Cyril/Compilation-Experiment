@@ -392,28 +392,36 @@ bool SemanticAnalyzer::checkReturnOnAllPaths(void* block) {
     }
 
     if (last->kind() == NodeKind::IfStmt) {
-        IfStmt* ifStmt = static_cast<IfStmt*>(last);
-        if (ifStmt->elseStmt) {
-            bool thenReturns = false;
-            bool elseReturns = false;
-
-            if (ifStmt->thenStmt->kind() == NodeKind::BlockStmt) {
-                thenReturns = checkReturnOnAllPaths(static_cast<BlockStmt*>(ifStmt->thenStmt.get()));
-            } else if (ifStmt->thenStmt->kind() == NodeKind::ReturnStmt) {
-                thenReturns = true;
-            }
-
-            if (ifStmt->elseStmt->kind() == NodeKind::BlockStmt) {
-                elseReturns = checkReturnOnAllPaths(static_cast<BlockStmt*>(ifStmt->elseStmt.get()));
-            } else if (ifStmt->elseStmt->kind() == NodeKind::ReturnStmt) {
-                elseReturns = true;
-            }
-
-            return thenReturns && elseReturns;
-        }
+        return checkIfReturnsOnAllPaths(last);
     }
 
     return false;
+}
+
+bool SemanticAnalyzer::checkIfReturnsOnAllPaths(void* ifStmt) {
+    auto* s = static_cast<IfStmt*>(ifStmt);
+    if (!s->elseStmt) return false;
+
+    bool thenReturns = false;
+    bool elseReturns = false;
+
+    // then 分支检查
+    if (s->thenStmt->kind() == NodeKind::BlockStmt) {
+        thenReturns = checkReturnOnAllPaths(static_cast<BlockStmt*>(s->thenStmt.get()));
+    } else if (s->thenStmt->kind() == NodeKind::ReturnStmt) {
+        thenReturns = true;
+    }
+
+    // else 分支检查（支持 else-if 链的递归）
+    if (s->elseStmt->kind() == NodeKind::BlockStmt) {
+        elseReturns = checkReturnOnAllPaths(static_cast<BlockStmt*>(s->elseStmt.get()));
+    } else if (s->elseStmt->kind() == NodeKind::ReturnStmt) {
+        elseReturns = true;
+    } else if (s->elseStmt->kind() == NodeKind::IfStmt) {
+        elseReturns = checkIfReturnsOnAllPaths(s->elseStmt.get());
+    }
+
+    return thenReturns && elseReturns;
 }
 
 std::optional<int> SemanticAnalyzer::evalConstExpr(void* expr) {
