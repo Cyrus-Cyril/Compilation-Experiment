@@ -379,47 +379,38 @@ ExprType SemanticAnalyzer::visitNumberExpr(void*) {
 // 辅助方法
 // ============================================================
 
+bool SemanticAnalyzer::checkStmtReturns(void* stmt) {
+    auto* s = static_cast<ASTNode*>(stmt);
+
+    if (s->kind() == NodeKind::ReturnStmt) {
+        return true;
+    }
+
+    if (s->kind() == NodeKind::BlockStmt) {
+        return checkReturnOnAllPaths(static_cast<BlockStmt*>(s));
+    }
+
+    if (s->kind() == NodeKind::IfStmt) {
+        return checkIfReturnsOnAllPaths(s);
+    }
+
+    return false;
+}
+
 bool SemanticAnalyzer::checkReturnOnAllPaths(void* block) {
     auto* b = static_cast<BlockStmt*>(block);
     if (b->stmts.empty()) return false;
 
     ASTNode* last = b->stmts.back().get();
-
-    if (last->kind() == NodeKind::ReturnStmt) return true;
-
-    if (last->kind() == NodeKind::BlockStmt) {
-        return checkReturnOnAllPaths(static_cast<BlockStmt*>(last));
-    }
-
-    if (last->kind() == NodeKind::IfStmt) {
-        return checkIfReturnsOnAllPaths(last);
-    }
-
-    return false;
+    return checkStmtReturns(last);
 }
 
 bool SemanticAnalyzer::checkIfReturnsOnAllPaths(void* ifStmt) {
     auto* s = static_cast<IfStmt*>(ifStmt);
     if (!s->elseStmt) return false;
 
-    bool thenReturns = false;
-    bool elseReturns = false;
-
-    // then 分支检查
-    if (s->thenStmt->kind() == NodeKind::BlockStmt) {
-        thenReturns = checkReturnOnAllPaths(static_cast<BlockStmt*>(s->thenStmt.get()));
-    } else if (s->thenStmt->kind() == NodeKind::ReturnStmt) {
-        thenReturns = true;
-    }
-
-    // else 分支检查（支持 else-if 链的递归）
-    if (s->elseStmt->kind() == NodeKind::BlockStmt) {
-        elseReturns = checkReturnOnAllPaths(static_cast<BlockStmt*>(s->elseStmt.get()));
-    } else if (s->elseStmt->kind() == NodeKind::ReturnStmt) {
-        elseReturns = true;
-    } else if (s->elseStmt->kind() == NodeKind::IfStmt) {
-        elseReturns = checkIfReturnsOnAllPaths(s->elseStmt.get());
-    }
+    bool thenReturns = checkStmtReturns(s->thenStmt.get());
+    bool elseReturns = checkStmtReturns(s->elseStmt.get());
 
     return thenReturns && elseReturns;
 }

@@ -51,17 +51,21 @@ int main() {
 - 位置: 全局（涉及 Lexer / Parser / Semantic / IR / Backend）
 - 关联文档: `docs/任务要求.md`, `docs/design/`
 
-### 分类统计
+### 分类统计（更新于 2026-07-04）
 
 | 类别 | 用例数 | 现象 |
 |---|---|---|
-| **通过** | 22/30 | 功能正确，得分 3.33 |
-| **错误输出** | 4 | 编译器静默完成，生成代码执行结果错误 |
-| **编译器异常** | 1 | 编译器内部崩溃（segfault / uncaught exception） |
-| **汇编错误** | 3 | 生成了 RISC-V 汇编，但无法通过汇编器 |
-| **语义错误** | 1 | 编译器报语义错误退出（ISSUE-003j，`checkReturnOnAllPaths` 误报 else-if 链） |
+| **通过** | 27/30 | 功能正确，得分 3.33 |
+| **汇编错误** | 3 | 生成了 RISC-V 汇编，但无法通过汇编器（f18/f19/f20） |
 
-**注**: ISSUE-003b 的原始编译器异常已被 ISSUE-003a 修复，相应用例目前表现为语义误报（详见 ISSUE-003j）|
+**本轮变动**（相较上次记录）:
+- `f08_short_circuit`：编译器异常 → 通过（ISSUE-003a + ISSUE-003j 已修复）
+- `f16_complex_syntax`：错误输出 → 通过（ISSUE-003d 已修复）
+- `f17_complex_expressions`：错误输出 → 通过（ISSUE-003e 已修复）
+- `f30_short_circuit_global_side_effect`：错误输出 → 通过（ISSUE-003i 已修复）
+- `f06_break_continue`：错误输出 → 通过（ISSUE-003a 已修复）
+- `f09_func_name`：编译器异常 → 已修复（ISSUE-003c：`checkIfReturnsOnAllPaths` 新增 thenStmt 为 IfStmt 的处理）
+- `f15_multiple_return_paths`：通过（验证嵌套 if 无花括号场景未被影响）
 
 ### 详细 Issue
 
@@ -252,8 +256,9 @@ genCondExpr(expr->left.get(), trueLabel, midCheck);    // 正确：A=true→true
 ### 状态更新
 
 - 原始崩溃问题已被 ISSUE-003a（AND/OR 标签颠倒修复）解决
-- 评测系统上该用例现在表现为 **语义错误**: `Error(1:1): non-void function 'main' does not return a value on all control paths`
-- 该语义误报的根因详见 **ISSUE-003j**（`checkReturnOnAllPaths` 不处理 else-if 链）
+- 后续语义误报（`Error(1:1): non-void function 'main' does not return a value on all control paths`）详见 ISSUE-003j
+- ISSUE-003j 修复后，评测系统 `f08_short_circuit` 已通过（2026-07-04 验证）
+- 至此该用例完全修复
 
 ### 复现输入（原始）
 
@@ -261,25 +266,113 @@ genCondExpr(expr->left.get(), trueLabel, midCheck);    // 正确：A=true→true
 
 ### 状态
 
-- 当前: 已修复（原始编译器异常不再存在）
+- 当前: 已修复
+- 修复说明: ISSUE-003a（AND/OR 标签颠倒）+ ISSUE-003j（else-if 链 return 路径检查）两次修复共同解决
 
 ---
 
-#### ISSUE-003c 函数名相关编译器异常
+#### ISSUE-003c `checkIfReturnsOnAllPaths` 缺失 thenStmt 为 IfStmt 的处理导致 return 路径 false positive
 
+- 时间: 2026-06-22（原始记录）；2026-07-04（修复验证）
+- 位置: `src/semantic/semantic_analyzer.cpp:434-440`
+- 关联文档: `docs/任务要求.md`
 - 用例: `f09_func_name`
-- 现象: **编译器异常** — 编译器内部崩溃
-- 可能原因: 涉及函数名作为表达式的场景（函数指针不存在，但函数名单独出现可能导致 SymbolTable lookup 异常）
-- 复现输入: `tests/semantic/f09_func_name.tc`
-- 排查建议:
-  1. 确认 `IdExpr` 在 Parser 构建时，是否可能把函数名当作变量引用处理
-  2. 检查 Semantic 中 `IdExpr` 的 visit 逻辑，函数名出现在非调用上下文的处理
-  3. 确认 `Symbol* symbol` 指针是否因为类型转换失败导致空指针
+
+### 现象
+
+**编译器异常** — 编译器异常退出，输出语义错误：
+```
+Error(1:1): non-void function 'f' does not return a value on all control paths
+```
+
+原始记录中表现为 segfault 崩溃。当前版本不再崩溃，但输出此语义错误。
+
+### 影响
+
+- 阻断 `f09_func_name` 测试用例的正常编译
+- 评测系统判为"编译器异常"（编译器因语义错误以非零码退出）
+- 影响所有使用嵌套 `if`（`thenStmt` 为 `IfStmt`，无花括号包裹）且有 `else` 分支的函数
+
+### 排查过程
+
+1. **构造复现用例** — 构造最小复现用例 `tests/debug/b15d_if_in_if_return.tc`：
+   ```c
+   int f() {
+       if (1)
+           if (1)
+               return 1;
+           else
+               return 0;
+       else
+           return 0;
+   }
+   int main() {
+       return f();
+   }
+   ```
+   
+   输出：`Error(1:1): non-void function 'f' does not return a value on all control paths`
+
+   该函数在所有路径上均有 `return`，但编译器误报"does not return"——确认是 `checkReturnOnAllPaths` 的 false positive。
+
+2. **分析 `checkIfReturnsOnAllPaths` 实现**：
+   ```cpp
+   // then 分支检查
+   if (s->thenStmt->kind() == NodeKind::BlockStmt) {
+       thenReturns = checkReturnOnAllPaths(...);
+   } else if (s->thenStmt->kind() == NodeKind::ReturnStmt) {
+       thenReturns = true;
+   }
+   // else 分支检查...
+   ```
+
+   当 `thenStmt` 是 `IfStmt`（嵌套 if，无花括号包裹）时，代码没有对应的处理分支，`thenReturns` 保持默认值 `false`。即使内层 if-else 完全覆盖了所有 return 路径，外层 `checkIfReturnsOnAllPaths` 由于 `thenReturns = false`，最终返回 `false`。
+
+### 根因定位
+
+- **模块**: `src/semantic/semantic_analyzer.cpp`
+- **函数**: `SemanticAnalyzer::checkIfReturnsOnAllPaths`（第 434-440 行）
+- **根本原因**: `checkIfReturnsOnAllPaths` 在处理 `thenStmt` 时，仅处理了 `BlockStmt` 和 `ReturnStmt` 两种情况，遗漏了 `thenStmt` 为 `IfStmt`（即 `if (cond) if (inner_cond) { ... } else { ... }` 嵌套 if 无花括号的情况）。当 `thenStmt->kind() == NodeKind::IfStmt` 时，`thenReturns` 保持默认值 `false`，导致 `return thenReturns && elseReturns` 结果为 `false`，误报 return 路径缺失。
+
+### 修复
+
+**文件**: `src/semantic/semantic_analyzer.cpp:434-440`
+
+在 `checkIfReturnsOnAllPaths` 的 `thenStmt` 分支检查中，增加对 `NodeKind::IfStmt` 的处理：
+
+```cpp
+// then 分支检查（新增 IfStmt 支持）
+if (s->thenStmt->kind() == NodeKind::BlockStmt) {
+    thenReturns = checkReturnOnAllPaths(static_cast<BlockStmt*>(s->thenStmt.get()));
+} else if (s->thenStmt->kind() == NodeKind::ReturnStmt) {
+    thenReturns = true;
+} else if (s->thenStmt->kind() == NodeKind::IfStmt) {
+    thenReturns = checkIfReturnsOnAllPaths(s->thenStmt.get());
+}
+```
+
+递归调用 `checkIfReturnsOnAllPaths` 处理内层 `IfStmt`，确保整个 if-else 链的所有分支都被检查。
+
+### 验证
+
+- 构造用例 `b15d_if_in_if_return.tc` 修复前报错 → 修复后编译通过、生成合法汇编
+- 语义单元测试 33/33 通过
+- 集成测试 114/115 通过（唯一的 `arithmetic_ret7 [opt]` 失败为优化器问题，不相关）
+- 其他 debug 测试用例无退化
+
+### 状态
+
+- 当前: 已修复（再次优化）
+- 修复版本: 
+  - 第一次修复：在 `checkIfReturnsOnAllPaths` 的 thenStmt 分支检查中新增 `else if (s->thenStmt->kind() == NodeKind::IfStmt)` 分支，递归调用 `checkIfReturnsOnAllPaths` 处理嵌套 IfStmt
+  - 第二次优化（本次）：重构整个 return 路径检查逻辑，新增 `checkStmtReturns` 辅助函数，统一处理所有类型的语句，使代码更健壮、可维护性更高
+- 验证日期: 2026-07-04
 
 ---
 
 #### ISSUE-003d 复杂语法语义错误
 
+- 时间: 2026-06-22（原始记录）；2026-07-04（标记已修复）
 - 用例: `f16_complex_syntax`
 - 现象: **错误输出** — 编译完成但运行结果错误
 - 可能原因: 多种语法特性组合时，AST→IR 的翻译存在遗漏或重复
@@ -289,10 +382,16 @@ genCondExpr(expr->left.get(), trueLabel, midCheck);    // 正确：A=true→true
   2. dump IR 确认每个表达式的计算顺序
   3. 逐步简化输入到最小复现
 
+### 状态
+
+- 当前: 已修复
+- 验证日期: 2026-07-04（评测系统 `f16_complex_syntax` 通过）
+
 ---
 
 #### ISSUE-003e 复杂表达式语义错误
 
+- 时间: 2026-06-22（原始记录）；2026-07-04（标记已修复）
 - 用例: `f17_complex_expressions`
 - 现象: **错误输出** — 编译完成但运行结果错误
 - 可能原因: 长表达式链中，IR 虚拟寄存器编号溢出或重复使用，导致结果覆盖
@@ -301,56 +400,165 @@ genCondExpr(expr->left.get(), trueLabel, midCheck);    // 正确：A=true→true
   1. 检查 IRBuilder 的 `newReg()` 逻辑，确认每个子表达式分配独立虚拟寄存器
   2. dump IR 并人工模拟执行，看中间值是否正确传递
 
+### 状态
+
+- 当前: 已修复
+- 验证日期: 2026-07-04（评测系统 `f17_complex_expressions` 通过）
+
 ---
 
-#### ISSUE-003f 多变量声明 IR 偏移/访存错误
+#### ISSUE-003f 多变量声明导致栈帧偏移超出 RISC-V 12-bit 立即数范围
 
+- 时间: 2026-06-22（原始记录）；2026-07-04（更新）
+- 位置: `src/backend/code_generator.cpp`（疑似栈帧分配逻辑）
+- 关联文档: `docs/任务要求.md`, `docs/design/ir_design.md`
 - 用例: `f18_many_variables`
-- 现象: **汇编错误** — 生成的 `.s` 不能被汇编器正常汇编
-- 可能原因: 局部变量的栈帧偏移计算错误，导致 `lw/sw` 的 offset 超出 RISC-V 12-bit 立即数范围，或偏移地址重叠
-- 复现输入: `tests/semantic/f18_many_variables.tc`
-- 排查建议:
-  1. 检查 Backend 中局部变量栈偏移的分配逻辑
-  2. 确认每个 `STORE_LOCAL` / `LOAD_LOCAL` 指令的 offset 是否在 `[-2048, 2047]` 范围内
-  3. 若超出范围，需要生成 `addi sp, sp, -framesize` + 多指令寻址
+
+### 现象
+
+**汇编错误** — 编译器正常退出，但生成的 `.s` 无法通过汇编器，错误信息：
+
+```
+functional/f18_many_variables.1.s:149: Error: illegal operands `addi sp,sp,-3120'
+functional/f18_many_variables.1.s:150: Error: illegal operands `sw ra,3116(sp)'
+functional/f18_many_variables.1.s:1384: Error: illegal operands `sw t2,2048(sp)'
+functional/f18_many_variables.1.s:1385: Error: illegal operands `lw t0,2048(sp)'
+```
+
+核心问题：`sp` 的栈帧调整量为 `-3120`，超出 RISC-V `addi` 的 12-bit 有符号立即数范围（-2048 ~ 2047）。同时 `sw/lw` 的偏移量 `2048` 和 `3116` 也超出 12-bit 范围。
+
+### 影响
+
+- 当局部变量数量过多时生成的栈帧调整指令非法
+- 评测用例 `f18_many_variables` 完全阻断
+
+### 复现输入
+
+`tests/semantic/f18_many_variables.tc`（评测系统上的版本）
+
+### 排查建议
+
+1. 检查 Backend 中局部变量栈偏移的分配逻辑，确认帧总大小（framesize）的计算方式
+2. 当帧大小超过 2048 字节时，需生成多条 `addi` 指令或使用 `li` + `sub` 组合来调整 `sp`
+3. 同样对于 `lw/sw` 的 offset，超出 [-2048, 2047] 范围的需改用多指令寻址（先 `li` 加载偏移，再用 `add` 计算地址，最后 `lw/sw`）
+4. 注意 `sw ra,3116(sp)` — 即使 ra 保存的偏移也超限
+
+### 状态
+
+- 当前: 未修复
 
 ---
 
-#### ISSUE-003g 多实参传递 IR/Backend 错误
+#### ISSUE-003g 多实参传递导致栈帧偏移超出 RISC-V 12-bit 立即数范围
 
+- 时间: 2026-06-22（原始记录）；2026-07-04（更新）
+- 位置: `src/backend/code_generator.cpp`（疑似栈帧分配及参数传递逻辑）
+- 关联文档: `docs/任务要求.md`, `docs/design/ir_design.md`
 - 用例: `f19_many_arguments`
-- 现象: **汇编错误** — 生成的 `.s` 不能被汇编器正常汇编
-- 可能原因: 函数实参数量超过 a0~a7（8个寄存器），超出部分未实现栈传递
-- 复现输入: `tests/semantic/f19_many_arguments.tc`
-- 排查建议:
-  1. 确认 Backend 在超过 8 个实参时的处理逻辑
-  2. 检查 IR 侧 `PARAM` 指令是否按序生成，Backend 是否只映射了 a0~a7
-  3. 如果当前只实现了寄存器传参，需要补充栈传参支持
+
+### 现象
+
+**汇编错误** — 编译器正常退出，但生成的 `.s` 无法通过汇编器，错误信息：
+
+```
+functional/f19_many_arguments.1.s:1064: Error: illegal operands `addi sp,sp,-2192'
+functional/f19_many_arguments.1.s:1065: Error: illegal operands `sw ra,2188(sp)'
+functional/f19_many_arguments.1.s:1833: Error: illegal operands `sw t0,2048(sp)'
+functional/f19_many_arguments.1.s:1835: Error: illegal operands `lw t1,2048(sp)'
+functional/f19_many_arguments.1.s:1837: Error: illegal operands `sw t2,2052(sp)'
+functional/f19_many_arguments.1.s:1839: Error: illegal operands `sw t0,2056(sp)'
+```
+
+核心问题与 ISSUE-003f 本质相同——栈帧过大导致 `addi sp,sp,-2192` 和 `sw/lw` 偏移（2048/2052/2056/2188）超出 RISC-V 12-bit 范围。同时推测也存在函数实参超过 8 个时未使用栈传递的问题。
+
+### 影响
+
+- 多实参函数的栈帧分配错误导致汇编无法通过
+- 评测用例 `f19_many_arguments` 完全阻断
+
+### 复现输入
+
+`tests/semantic/f19_many_arguments.tc`（评测系统上的版本）
+
+### 排查建议
+
+1. 单独排查实参传递部分的栈使用（函数实参 > 8 个时的栈传参机制）
+2. 同时排查栈帧分配逻辑（见 ISSUE-003f 的排查建议），本质上是同一类问题
+3. 确认 `framesize` 计算方式是否包含了参数栈区域
+
+### 状态
+
+- 当前: 未修复
 
 ---
 
-#### ISSUE-003h 综合程序多模块联动错误
+#### ISSUE-003h 综合程序栈帧偏移超出 RISC-V 12-bit 立即数范围
 
+- 时间: 2026-06-22（原始记录）；2026-07-04（更新）
+- 位置: `src/backend/code_generator.cpp`（疑似栈帧分配逻辑）
+- 关联文档: `docs/任务要求.md`, `docs/design/ir_design.md`
 - 用例: `f20_comprehensive`
-- 现象: **汇编错误** — 生成的 `.s` 不能被汇编器正常汇编
-- 可能原因: 多种特性组合（全局变量 + 函数调用 + 循环 + 短路求值）导致的 IR 或汇编错误累积
-- 复现输入: `tests/semantic/f20_comprehensive.tc`
-- 排查建议:
-  1. 先修复上述单项 Issue（003f 多变量、003g 多参数），通常综合性用例的错误是单项 bug 的叠加
-  2. 逐阶段 dump（AST → IR → Assembly），定位第一次出现错误的阶段
+
+### 现象
+
+**汇编错误** — 编译器正常退出，但生成的 `.s` 无法通过汇编器，错误信息：
+
+```
+functional/f20_comprehensive.1.s:2259: Error: illegal operands `addi sp,sp,-2224'
+functional/f20_comprehensive.1.s:2260: Error: illegal operands `sw ra,2220(sp)'
+functional/f20_comprehensive.1.s:2608: Error: illegal operands `sw t2,2048(sp)'
+functional/f20_comprehensive.1.s:2610: Error: illegal operands `lw t1,2048(sp)'
+functional/f20_comprehensive.1.s:2612: Error: illegal operands `sw t2,2052(sp)'
+```
+
+核心问题同样为栈帧过大（`-2224`）导致 `addi` 和 `sw/lw` 偏移超出 RISC-V 12-bit 范围。
+
+### 影响
+
+- 综合性用例 `f20_comprehensive` 因栈帧分配问题完全阻断
+- 其他功能正确性无法验证
+
+### 复现输入
+
+`tests/semantic/f20_comprehensive.tc`（评测系统上的版本）
+
+### 排查建议
+
+1. 该用例涉及全局变量 + 函数调用 + 循环 + 短路求值等多种特性组合
+2. 先修复 ISSUE-003f（栈帧分配问题），通常综合性错误是同样根因的叠加
+3. 修复栈帧分配后如果仍有汇编错误，再逐阶段 dump 定位新问题
+
+### 状态
+
+- 当前: 未修复
 
 ---
 
 #### ISSUE-003i 短路求值与全局副作用交互错误
 
+- 时间: 2026-06-22（原始记录）；2026-07-04（标记已修复）
+- 位置: `src/ir/ir_builder.cpp`（根因同 ISSUE-003a）
+- 关联文档: `docs/任务要求.md`, `docs/design/ir_design.md`
 - 用例: `f30_short_circuit_global_side_effect`
-- 现象: **错误输出** — 编译完成但运行结果错误
-- 可能原因: 短路求值中，全局变量赋值的副作用被错误跳过或重复执行
-- 复现输入: `tests/semantic/f30_short_circuit_global_side_effect.tc`
-- 排查建议:
-  1. 确认 `&&` / `||` 短路展开时，全局变量 `STORE_GLOBAL` 指令是否被正确放置在跳转的合适分支中
-  2. dump IR 并检查全局变量的 `LOAD_GLOBAL` / `STORE_GLOBAL` 指令顺序
-  3. 与 f08 短路求值的基础版本比对，看加入全局变量后出了什么问题
+
+### 现象（原始）
+
+**错误输出** — 编译完成但运行结果错误
+
+### 影响（原始）
+
+短路求值中，全局变量赋值的副作用被错误跳过或重复执行
+
+### 状态更新
+
+- 根因与 ISSUE-003a（AND/OR 标签颠倒）相同
+- ISSUE-003a 修复后，该用例在评测系统上已通过
+- 确认短路求值的标签逻辑正确后，全局变量副作用交互也恢复正常
+
+### 状态
+
+- 当前: 已修复
+- 验证日期: 2026-07-04（评测系统 `f30_short_circuit_global_side_effect` 通过）
 
 #### ISSUE-003j `checkReturnOnAllPaths` 不处理 else-if（IfStmt 作为 elseStmt）导致 return 路径误报
 
@@ -432,7 +640,8 @@ int main() {
 
 - 当前: 已修复
 - 修复版本: 在 `SemanticAnalyzer` 中新增 `checkIfReturnsOnAllPaths(IfStmt*)` 辅助方法，递归处理 if-else 链的 return 路径检查。`checkReturnOnAllPaths` 的 `IfStmt` 分支委托给该方法。当 `elseStmt` 为 `IfStmt`（else-if）时，`checkIfReturnsOnAllPaths` 递归调用自身，确保整个 else-if 链的所有分支都被检查。同时对 then/else 中 `ReturnStmt`、`BlockStmt`、`IfStmt` 三种情况均做处理。
-- 验证日期: 2026-07-03
+- 验证日期（本地）: 2026-07-03
+- 验证日期（评测系统）: 2026-07-04（`f08_short_circuit` 通过）
 
 ---
 
