@@ -405,11 +405,13 @@ bool SemanticAnalyzer::checkIfReturnsOnAllPaths(void* ifStmt) {
     bool thenReturns = false;
     bool elseReturns = false;
 
-    // then 分支检查
+    // then 分支检查（支持 then 中嵌套 IfStmt，如 `if (a) if (b) return 1; else ...`)
     if (s->thenStmt->kind() == NodeKind::BlockStmt) {
         thenReturns = checkReturnOnAllPaths(static_cast<BlockStmt*>(s->thenStmt.get()));
     } else if (s->thenStmt->kind() == NodeKind::ReturnStmt) {
         thenReturns = true;
+    } else if (s->thenStmt->kind() == NodeKind::IfStmt) {
+        thenReturns = checkIfReturnsOnAllPaths(s->thenStmt.get());
     }
 
     // else 分支检查（支持 else-if 链的递归）
