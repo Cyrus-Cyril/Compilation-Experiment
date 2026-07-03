@@ -1,0 +1,13 @@
+int main() {
+    int i = 0;
+    int sum = 0;
+    while (i < 10 && sum < 20) {
+        i = i + 1;
+        sum = sum + i;
+        if (i == 5) {
+            break;
+        }
+    }
+    return sum;
+}
+/* Expected: i=1(sum=1),2(sum=3),3(sum=6),4(sum=10),5(break). sum=15 */

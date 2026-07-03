@@ -280,14 +280,16 @@ void IRBuilderImpl::genCondExpr(ExprNode* expr, uint32_t trueLabel, uint32_t fal
 
 void IRBuilderImpl::genCondBinary(BinaryExpr* expr, uint32_t trueLabel, uint32_t falseLabel) {
     if (expr->op == BinaryOp::AND) {
-        uint32_t midFalse = newLabel();
-        genCondExpr(expr->left.get(), trueLabel, midFalse);
-        emitLabel(midFalse);
+        // A && B: A 为假时短路到 falseLabel，A 为真时检查 B
+        uint32_t midCheck = newLabel();
+        genCondExpr(expr->left.get(), midCheck, falseLabel);
+        emitLabel(midCheck);
         genCondExpr(expr->right.get(), trueLabel, falseLabel);
     } else if (expr->op == BinaryOp::OR) {
-        uint32_t midTrue = newLabel();
-        genCondExpr(expr->left.get(), midTrue, falseLabel);
-        emitLabel(midTrue);
+        // A || B: A 为真时短路到 trueLabel，A 为假时检查 B
+        uint32_t midCheck = newLabel();
+        genCondExpr(expr->left.get(), trueLabel, midCheck);
+        emitLabel(midCheck);
         genCondExpr(expr->right.get(), trueLabel, falseLabel);
     }
 }

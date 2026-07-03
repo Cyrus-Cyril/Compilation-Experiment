@@ -1,0 +1,12 @@
+int main() {
+    int i = 0;
+    int flag = 1;
+    while (i < 3 || flag == 0) {
+        i = i + 1;
+        if (i == 2) {
+            break;
+        }
+    }
+    return i;
+}
+/* Expected: i=1(condition true), i=2(break). return 2 */
