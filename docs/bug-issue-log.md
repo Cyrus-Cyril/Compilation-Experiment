@@ -362,11 +362,12 @@ if (s->thenStmt->kind() == NodeKind::BlockStmt) {
 
 ### 状态
 
-- 当前: 已修复（再次完善）
+- 当前: 已修复（最终简化版本）
 - 修复版本: 
   - 第一次修复：在 `checkIfReturnsOnAllPaths` 的 thenStmt 分支检查中新增 `else if (s->thenStmt->kind() == NodeKind::IfStmt)` 分支，递归调用 `checkIfReturnsOnAllPaths` 处理嵌套 IfStmt
-  - 第二次优化：重构整个 return 路径检查逻辑，新增 `checkStmtReturns` 辅助函数，统一处理所有类型的语句
-  - 第三次完善（本次）：在 `checkIfReturnsOnAllPaths` 中显式处理 thenStmt 和 elseStmt 的所有可能情况，确保任何情况下都能正确检查 return 路径
+  - 第二次优化：重构整个 return 路径检查逻辑，新增 `checkStmtReturns` 辅助函数
+  - 第三次完善：在 `checkIfReturnsOnAllPaths` 中显式处理所有情况
+  - 第四次简化（本次）：回到最简单直接的实现，移除辅助函数，只保留 `checkReturnOnAllPaths` 和 `checkIfReturnsOnAllPaths`，显式处理所有三种可能的语句类型，确保代码清晰无歧义
 - 验证日期: 2026-07-04
 
 ---
