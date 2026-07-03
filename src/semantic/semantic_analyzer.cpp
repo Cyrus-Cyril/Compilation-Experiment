@@ -409,8 +409,30 @@ bool SemanticAnalyzer::checkIfReturnsOnAllPaths(void* ifStmt) {
     auto* s = static_cast<IfStmt*>(ifStmt);
     if (!s->elseStmt) return false;
 
-    bool thenReturns = checkStmtReturns(s->thenStmt.get());
-    bool elseReturns = checkStmtReturns(s->elseStmt.get());
+    bool thenReturns = false;
+    bool elseReturns = false;
+
+    // 显式处理 thenStmt 的所有情况
+    if (s->thenStmt->kind() == NodeKind::BlockStmt) {
+        thenReturns = checkReturnOnAllPaths(static_cast<BlockStmt*>(s->thenStmt.get()));
+    } else if (s->thenStmt->kind() == NodeKind::ReturnStmt) {
+        thenReturns = true;
+    } else if (s->thenStmt->kind() == NodeKind::IfStmt) {
+        thenReturns = checkIfReturnsOnAllPaths(s->thenStmt.get());
+    } else {
+        thenReturns = checkStmtReturns(s->thenStmt.get());
+    }
+
+    // 显式处理 elseStmt 的所有情况
+    if (s->elseStmt->kind() == NodeKind::BlockStmt) {
+        elseReturns = checkReturnOnAllPaths(static_cast<BlockStmt*>(s->elseStmt.get()));
+    } else if (s->elseStmt->kind() == NodeKind::ReturnStmt) {
+        elseReturns = true;
+    } else if (s->elseStmt->kind() == NodeKind::IfStmt) {
+        elseReturns = checkIfReturnsOnAllPaths(s->elseStmt.get());
+    } else {
+        elseReturns = checkStmtReturns(s->elseStmt.get());
+    }
 
     return thenReturns && elseReturns;
 }
