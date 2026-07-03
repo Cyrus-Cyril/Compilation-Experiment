@@ -55,8 +55,8 @@ int main() {
 
 | 类别 | 用例数 | 现象 |
 |---|---|---|
-| **通过** | 27/30 | 功能正确，得分 3.33 |
-| **汇编错误** | 3 | 生成了 RISC-V 汇编，但无法通过汇编器（f18/f19/f20） |
+| **通过** | 30/30 | 功能正确，得分 3.33 |
+| **汇编错误** | 0 | 已全部修复 |
 
 **本轮变动**（相较上次记录）:
 - `f08_short_circuit`：编译器异常 → 通过（ISSUE-003a + ISSUE-003j 已修复）
@@ -64,8 +64,11 @@ int main() {
 - `f17_complex_expressions`：错误输出 → 通过（ISSUE-003e 已修复）
 - `f30_short_circuit_global_side_effect`：错误输出 → 通过（ISSUE-003i 已修复）
 - `f06_break_continue`：错误输出 → 通过（ISSUE-003a 已修复）
-- `f09_func_name`：编译器异常 → 已修复（ISSUE-003c：`checkStmtReturns` 通用辅助函数 + 嵌套 IfStmt + WhileStmt 无限循环处理）
+- `f09_func_name`：编译器异常 → 通过（ISSUE-003c：`checkStmtReturns` 通用辅助函数 + 嵌套 IfStmt + WhileStmt 无限循环处理）
 - `f15_multiple_return_paths`：通过（验证嵌套 if 无花括号场景未被影响）
+- `f18_many_variables`：汇编错误 → 通过（ISSUE-003f：`emitLoadSP`/`emitStoreSP`/`emitAdjustSP` 多指令拆解）
+- `f19_many_arguments`：汇编错误 → 通过（ISSUE-003g：与 003f 同一修复）
+- `f20_comprehensive`：汇编错误 → 通过（ISSUE-003h：与 003f 同一修复）
 
 ### 详细 Issue
 
@@ -448,7 +451,9 @@ functional/f18_many_variables.1.s:1385: Error: illegal operands `lw t0,2048(sp)'
 
 ### 状态
 
-- 当前: 未修复
+- 当前: 已修复
+- 修复版本: 在 `code_generator.cpp` 的匿名命名空间中新增三个辅助函数 `emitLoadSP`、`emitStoreSP`、`emitAdjustSP`，当 `addi` 的立即数超过 2047 时拆分为 `li t2, N; {sub/add} sp, sp, t2`；当 `lw/sw` 的偏移量超出 [-2048, 2047] 时拆分为 `li t3, offset; add t3, sp, t3; {lw/sw} rd, 0(t3)`。修改 `loadOperand`、`storeVReg`、函数序言/尾声、`LOAD_LOCAL`、`STORE_LOCAL`、`RET` 指令的生成逻辑，全部使用新辅助函数。此修复同时解决 ISSUE-003f/003g/003h 三个栈帧溢出相关问题。
+- 验证日期: 2026-07-04
 
 ---
 
@@ -491,7 +496,9 @@ functional/f19_many_arguments.1.s:1839: Error: illegal operands `sw t0,2056(sp)'
 
 ### 状态
 
-- 当前: 未修复
+- 当前: 已修复
+- 修复版本: 与 ISSUE-003f 相同（同一修复）
+- 验证日期: 2026-07-04
 
 ---
 
@@ -533,7 +540,9 @@ functional/f20_comprehensive.1.s:2612: Error: illegal operands `sw t2,2052(sp)'
 
 ### 状态
 
-- 当前: 未修复
+- 当前: 已修复
+- 修复版本: 与 ISSUE-003f 相同（同一修复）
+- 验证日期: 2026-07-04
 
 ---
 
