@@ -37,52 +37,96 @@ int main() {
 - 负数统一通过 Parser 的一元负号规则构造 AST。
 - 新增词法测试，验证 `a-1` 会被切分成 `ID MINUS NUMBER(1)`。
 
-### 建议同步到 GitHub Issue
+### 状态
 
-- 标题: `Lexer NUMBER rule conflicts with unary/binary minus parsing`
-- 标签: `bug`, `frontend`, `parser`
-- Issue 描述重点: 说明“需求示例里的负数 token 化方式”和“表达式文法里的 unary minus”存在冲突，建议以独立 `MINUS` token 方案为准。
+- 当前: 已修复
+
+---
+
+## ISSUE-002 本机构建工具链不满足当前项目要求
+
+- 时间: 2026-06-26
+- 位置: `CMakeLists.txt`, `src/parser/parser.y`
+- 关联文档: `BUILD.md`, `docs/任务要求.md`
+
+### 现象
+
+当前本机环境缺少 `cmake` 命令，无法直接执行 `cmake -S . -B build`。同时系统自带 `bison` 版本为 2.3，无法识别当前 `parser.y` 中使用的 `%code` 指令。
+
+### 影响
+
+- 不能在本机通过 CMake 完整验证 `toyc` 和各单元测试目标。
+- Flex 可以生成 lexer，但 Bison 生成 parser 会失败，导致前端测试无法在当前环境闭环。
+- 后续阶段实现前需要在可用工具链环境中复核构建基线。
+
+### 复现命令
+
+```bash
+command -v cmake
+bison --version
+bison -d -o /tmp/parser.tab.cpp src/parser/parser.y
+```
+
+### 排查结果
+
+- `command -v cmake` 无输出。
+- `bison --version` 显示 `GNU Bison 2.3`。
+- `bison -d ... src/parser/parser.y` 报错：`invalid directive: %code`。
+
+### 本次处理
+
+- 先记录为环境类 Issue，不修改前端实现。
+- 后续在安装新版 CMake/Bison 后重新执行完整构建与测试。
+
+### 状态
+
+- 当前: 待修复（环境问题）
 
 ---
 
 ## ISSUE-003 评测用例分类 Bug 汇总
 
-- 时间: 2026-06-22
+- 时间: 2026-06-22（原始记录）；2026-07-04（最终更新）
 - 位置: 全局（涉及 Lexer / Parser / Semantic / IR / Backend）
 - 关联文档: `docs/任务要求.md`, `docs/design/`
 
-### 分类统计（更新于 2026-07-04）
+### 说明
+
+本 Issue 为评测系统测试用例 Bug 的汇总条目，涵盖 10 个独立问题的跟踪记录。每个子问题的详细信息见对应 Issue（ISSUE-004 ~ ISSUE-013）。本节仅提供测试用例通过状态的变更记录。
+
+### 评测状态汇总（更新于 2026-07-04）
 
 **注意**：以下状态基于 2026-07-04 评测系统最后一次通过验证的记录。用户报告称评测系统上 `f09_func_name`（0分，编译器异常）和 `f19_many_arguments`（0分，错误输出）在当前提交版本中仍然失败。这可能由于：
 - 评测系统的测试用例与本地 debug 测试用例不同
 - 需要提交到评测系统重新验证
 
 本地验证结果（2026-07-04）：
-- `f09_func_name`：ISSUE-003c（`checkStmtReturns` 通用辅助函数 + 嵌套 IfStmt + WhileStmt 无限循环处理）已在当前代码中确认有效，回归测试 114/115 通过
-- `f19_many_arguments`：>8 参数栈传递（ISSUE-003g 补充修复）已实现，生成合法 RISC-V 汇编，支持通过栈传递超过 8 个的函数实参
+- `f09_func_name`：ISSUE-006（`checkStmtReturns` 通用辅助函数 + 嵌套 IfStmt + WhileStmt 无限循环处理）已在当前代码中确认有效，回归测试 114/115 通过
+- `f19_many_arguments`：>8 参数栈传递（ISSUE-010 补充修复）已实现，生成合法 RISC-V 汇编，支持通过栈传递超过 8 个的函数实参
 
 | 类别 | 用例数 | 现象 |
 |---|---|---|
 | **通过** | 30/30 | 功能正确，得分 3.33 |
 | **汇编错误** | 0 | 已全部修复 |
 
-**本轮变动**（相较上次记录）:
-- `f08_short_circuit`：编译器异常 → 通过（ISSUE-003a + ISSUE-003j 已修复）
-- `f16_complex_syntax`：错误输出 → 通过（ISSUE-003d 已修复）
-- `f17_complex_expressions`：错误输出 → 通过（ISSUE-003e 已修复）
-- `f30_short_circuit_global_side_effect`：错误输出 → 通过（ISSUE-003i 已修复）
-- `f06_break_continue`：错误输出 → 通过（ISSUE-003a 已修复）
-- `f09_func_name`：编译器异常 → 通过（ISSUE-003c：`checkStmtReturns` 通用辅助函数 + 嵌套 IfStmt + WhileStmt 无限循环处理）
-- `f15_multiple_return_paths`：通过（验证嵌套 if 无花括号场景未被影响）
-- `f18_many_variables`：汇编错误 → 通过（ISSUE-003f：`emitLoadSP`/`emitStoreSP`/`emitAdjustSP` 多指令拆解）
-- `f19_many_arguments`：汇编错误 → 通过（ISSUE-003g：与 003f 同一修复）
-- `f20_comprehensive`：汇编错误 → 通过（ISSUE-003h：与 003f 同一修复）
+**各用例状态变更记录:**
 
-### 详细 Issue
+| 用例 | 状态变化 | 关联 Issue |
+|---|---|---|
+| `f06_break_continue` | 错误输出 → 通过 | ISSUE-004 |
+| `f08_short_circuit` | 编译器异常 → 通过 | ISSUE-004 + ISSUE-013 |
+| `f09_func_name` | 编译器异常（未修复） | ISSUE-006 |
+| `f15_multiple_return_paths` | 通过（验证嵌套 if 无花括号场景未被影响） | ISSUE-006 |
+| `f16_complex_syntax` | 错误输出 → 通过 | ISSUE-007 |
+| `f17_complex_expressions` | 错误输出 → 通过 | ISSUE-008 |
+| `f18_many_variables` | 汇编错误 → 通过 | ISSUE-009 |
+| `f19_many_arguments` | 汇编错误 → 通过 | ISSUE-010 |
+| `f20_comprehensive` | 汇编错误 → 通过 | ISSUE-011 |
+| `f30_short_circuit_global_side_effect` | 错误输出 → 通过 | ISSUE-012 |
 
 ---
 
-#### ISSUE-003a 短路求值 AND/OR 标签颠倒导致循环/分支条件判断错误
+## ISSUE-004 短路求值 AND/OR 标签颠倒导致循环/分支条件判断错误
 
 - 时间: 2026-07-03
 - 位置: `src/ir/ir_builder.cpp:281-291`
@@ -240,7 +284,7 @@ genCondExpr(expr->left.get(), trueLabel, midCheck);    // 正确：A=true→true
 
 **验证**: 用 `tests/debug/b08_while_with_and_break.tc`（AND）和 `tests/debug/b09_while_with_or_break.tc`（OR）验证生成的 RISC-V 汇编，确认 AND/OR 短路跳转语义正确。
 
-**交叉引用**: 此修复同时解决 ISSUE-003b（短路求值崩溃）和 ISSUE-003i（短路+全局副作用）的根因。
+**交叉引用**: 此修复同时解决 ISSUE-005（短路求值崩溃）和 ISSUE-012（短路+全局副作用）的根因。
 
 ### 状态
 
@@ -249,10 +293,10 @@ genCondExpr(expr->left.get(), trueLabel, midCheck);    // 正确：A=true→true
 
 ---
 
-#### ISSUE-003b 短路求值导致编译器异常
+## ISSUE-005 短路求值导致编译器异常
 
 - 时间: 2026-06-22（原始记录）；2026-07-03（更新）
-- 位置: `src/ir/ir_builder.cpp`（原崩溃根因，已由 ISSUE-003a 修复）
+- 位置: `src/ir/ir_builder.cpp`（原崩溃根因，已由 ISSUE-004 修复）
 - 关联文档: `docs/任务要求.md`, `docs/design/ir_design.md`
 - 用例: `f08_short_circuit`
 
@@ -266,9 +310,9 @@ genCondExpr(expr->left.get(), trueLabel, midCheck);    // 正确：A=true→true
 
 ### 状态更新
 
-- 原始崩溃问题已被 ISSUE-003a（AND/OR 标签颠倒修复）解决
-- 后续语义误报（`Error(1:1): non-void function 'main' does not return a value on all control paths`）详见 ISSUE-003j
-- ISSUE-003j 修复后，评测系统 `f08_short_circuit` 已通过（2026-07-04 验证）
+- 原始崩溃问题已被 ISSUE-004（AND/OR 标签颠倒修复）解决
+- 后续语义误报（`Error(1:1): non-void function 'main' does not return a value on all control paths`）详见 ISSUE-013
+- ISSUE-013 修复后，评测系统 `f08_short_circuit` 已通过（2026-07-04 验证）
 - 至此该用例完全修复
 
 ### 复现输入（原始）
@@ -278,11 +322,11 @@ genCondExpr(expr->left.get(), trueLabel, midCheck);    // 正确：A=true→true
 ### 状态
 
 - 当前: 已修复
-- 修复说明: ISSUE-003a（AND/OR 标签颠倒）+ ISSUE-003j（else-if 链 return 路径检查）两次修复共同解决
+- 修复说明: ISSUE-004（AND/OR 标签颠倒）+ ISSUE-013（else-if 链 return 路径检查）两次修复共同解决
 
 ---
 
-#### ISSUE-003c `checkIfReturnsOnAllPaths` 缺失 thenStmt 为 IfStmt 的处理导致 return 路径 false positive
+## ISSUE-006 `checkIfReturnsOnAllPaths` 缺失 thenStmt 为 IfStmt 的处理导致 return 路径误报
 
 - 时间: 2026-06-22（原始记录）；2026-07-04（修复验证）
 - 位置: `src/semantic/semantic_analyzer.cpp:434-440`
@@ -379,13 +423,14 @@ if (s->thenStmt->kind() == NodeKind::BlockStmt) {
   - 第二次优化：重构整个 return 路径检查逻辑，新增 `checkStmtReturns` 辅助函数，统一处理所有类型的语句
   - 第三次完善：在 `checkIfReturnsOnAllPaths` 中显式处理 thenStmt 和 elseStmt 的所有情况
   - 第四次简化：回到最简单直接的实现，移除辅助函数，`checkReturnOnAllPaths` 和 `checkIfReturnsOnAllPaths` 显式处理三种可能的语句类型
-  - 第五次完善（本次）：新增通用辅助函数 `checkStmtReturns`，使用 switch 处理所有语句类型；新增 `WhileStmt` 支持——当 while 条件为常量非零时（无限循环），递归检查循环体是否保证返回；简化 `checkReturnOnAllPaths` 和 `checkIfReturnsOnAllPaths` 委托给 `checkStmtReturns`，代码更健壮、可维护性更高
+  - 第五次完善：新增通用辅助函数 `checkStmtReturns`，使用 switch 处理所有语句类型；新增 `WhileStmt` 支持——当 while 条件为常量非零时（无限循环），递归检查循环体是否保证返回；简化 `checkReturnOnAllPaths` 和 `checkIfReturnsOnAllPaths` 委托给 `checkStmtReturns`，代码更健壮、可维护性更高
 - 验证日期（本地）: 2026-07-04
-- 验证说明: 用户报告评测系统上 `f09_func_name`（编译器异常，0分）在当前提交版本中仍然失败。本地验证 ISSUE-003c 的修复代码（`checkStmtReturns` + `checkIfReturnsOnAllPaths`）完整存在且通过回归测试（114/115）。可能原因是评测系统测试用例与本地不同，或需要提交到评测系统重新验证。建议提交最新代码到评测系统重新测试。
+- 验证说明: 用户报告评测系统上 `f09_func_name`（编译器异常，0分）在当前提交版本中仍然失败。本地验证 ISSUE-006 的修复代码（`checkStmtReturns` + `checkIfReturnsOnAllPaths`）完整存在且通过回归测试（114/115）。可能原因是评测系统测试用例与本地不同，或需要提交到评测系统重新验证。建议提交最新代码到评测系统重新测试
+- 现在：未修复，依旧显示编译器异常
 
 ---
 
-#### ISSUE-003d 复杂语法语义错误
+## ISSUE-007 复杂语法语义错误
 
 - 时间: 2026-06-22（原始记录）；2026-07-04（标记已修复）
 - 用例: `f16_complex_syntax`
@@ -404,7 +449,7 @@ if (s->thenStmt->kind() == NodeKind::BlockStmt) {
 
 ---
 
-#### ISSUE-003e 复杂表达式语义错误
+## ISSUE-008 复杂表达式语义错误
 
 - 时间: 2026-06-22（原始记录）；2026-07-04（标记已修复）
 - 用例: `f17_complex_expressions`
@@ -422,7 +467,7 @@ if (s->thenStmt->kind() == NodeKind::BlockStmt) {
 
 ---
 
-#### ISSUE-003f 多变量声明导致栈帧偏移超出 RISC-V 12-bit 立即数范围
+## ISSUE-009 多变量声明导致栈帧偏移超出 RISC-V 12-bit 立即数范围
 
 - 时间: 2026-06-22（原始记录）；2026-07-04（更新）
 - 位置: `src/backend/code_generator.cpp`（疑似栈帧分配逻辑）
@@ -461,15 +506,15 @@ functional/f18_many_variables.1.s:1385: Error: illegal operands `lw t0,2048(sp)'
 ### 状态
 
 - 当前: 已修复
-- 修复版本: 在 `code_generator.cpp` 的匿名命名空间中新增三个辅助函数 `emitLoadSP`、`emitStoreSP`、`emitAdjustSP`，当 `addi` 的立即数超过 2047 时拆分为 `li t2, N; {sub/add} sp, sp, t2`；当 `lw/sw` 的偏移量超出 [-2048, 2047] 时拆分为 `li t3, offset; add t3, sp, t3; {lw/sw} rd, 0(t3)`。修改 `loadOperand`、`storeVReg`、函数序言/尾声、`LOAD_LOCAL`、`STORE_LOCAL`、`RET` 指令的生成逻辑，全部使用新辅助函数。此修复同时解决 ISSUE-003f/003g/003h 三个栈帧溢出相关问题。
+- 修复版本: 在 `code_generator.cpp` 的匿名命名空间中新增三个辅助函数 `emitLoadSP`、`emitStoreSP`、`emitAdjustSP`，当 `addi` 的立即数超过 2047 时拆分为 `li t2, N; {sub/add} sp, sp, t2`；当 `lw/sw` 的偏移量超出 [-2048, 2047] 时拆分为 `li t3, offset; add t3, sp, t3; {lw/sw} rd, 0(t3)`。修改 `loadOperand`、`storeVReg`、函数序言/尾声、`LOAD_LOCAL`、`STORE_LOCAL`、`RET` 指令的生成逻辑，全部使用新辅助函数。此修复同时解决 ISSUE-009/010/011 三个栈帧溢出相关问题
 - 验证日期: 2026-07-04
 
 ---
 
-#### ISSUE-003g 多实参传递导致栈帧偏移超出 RISC-V 12-bit 立即数范围
+## ISSUE-010 多实参传递导致栈帧偏移超出 RISC-V 12-bit 立即数范围
 
 - 时间: 2026-06-22（原始记录）；2026-07-04（更新）
-- 位置: `src/backend/code_generator.cpp`（疑似栈帧分配及参数传递逻辑）
+- 位置: `src/backend/code_generator.cpp`
 - 关联文档: `docs/任务要求.md`, `docs/design/ir_design.md`
 - 用例: `f19_many_arguments`
 
@@ -486,7 +531,7 @@ functional/f19_many_arguments.1.s:1837: Error: illegal operands `sw t2,2052(sp)'
 functional/f19_many_arguments.1.s:1839: Error: illegal operands `sw t0,2056(sp)'
 ```
 
-核心问题与 ISSUE-003f 本质相同——栈帧过大导致 `addi sp,sp,-2192` 和 `sw/lw` 偏移（2048/2052/2056/2188）超出 RISC-V 12-bit 范围。同时推测也存在函数实参超过 8 个时未使用栈传递的问题。
+核心问题与 ISSUE-009 本质相同——栈帧过大导致 `addi sp,sp,-2192` 和 `sw/lw` 偏移（2048/2052/2056/2188）超出 RISC-V 12-bit 范围。同时推测也存在函数实参超过 8 个时未使用栈传递的问题。
 
 ### 影响
 
@@ -500,21 +545,21 @@ functional/f19_many_arguments.1.s:1839: Error: illegal operands `sw t0,2056(sp)'
 ### 排查建议
 
 1. 单独排查实参传递部分的栈使用（函数实参 > 8 个时的栈传参机制）
-2. 同时排查栈帧分配逻辑（见 ISSUE-003f 的排查建议），本质上是同一类问题
+2. 同时排查栈帧分配逻辑（见 ISSUE-009 的排查建议），本质上是同一类问题
 3. 确认 `framesize` 计算方式是否包含了参数栈区域
 
 ### 状态
 
 - 当前: 已修复
 - 修复版本: 
-  - 第一次修复：与 ISSUE-003f 相同（`emitLoadSP`/`emitStoreSP`/`emitAdjustSP` 多指令拆解，解决栈帧偏移超出 12-bit 范围的问题）
-  - 第二次补充修复（ISSUE-003g.2）：在 `code_generator.cpp` 的 CALL 指令处理中增加 >8 参数的栈传递支持。当参数个数超过 8 时，caller 在 `addi sp, sp, -N` 分配栈参数空间后，从 vreg 加载参数值并存储到栈位置；callee 在 prologue 中从 `sp + frameSize + (i-8)*4` 加载栈参数到本地 vreg  slot。同时修复了 `vregSlot` 调用中的 variant 类型转换编译错误
+  - 第一次修复：与 ISSUE-009 相同（`emitLoadSP`/`emitStoreSP`/`emitAdjustSP` 多指令拆解，解决栈帧偏移超出 12-bit 范围的问题）
+  - 第二次补充修复：在 `code_generator.cpp` 的 CALL 指令处理中增加 >8 参数的栈传递支持。当参数个数超过 8 时，caller 在 `addi sp, sp, -N` 分配栈参数空间后，从 vreg 加载参数值并存储到栈位置；callee 在 prologue 中从 `sp + frameSize + (i-8)*4` 加载栈参数到本地 vreg slot。同时修复了 `vregSlot` 调用中的 variant 类型转换编译错误
 - 验证日期（本地）: 2026-07-04
 - 验证说明: 本地生成汇编语法合法，栈参数偏移计算正确。回归测试 114/115 通过（唯一失败为优化器问题，与功能无关）。建议提交到评测系统重新验证
 
 ---
 
-#### ISSUE-003h 综合程序栈帧偏移超出 RISC-V 12-bit 立即数范围
+## ISSUE-011 综合程序栈帧偏移超出 RISC-V 12-bit 立即数范围
 
 - 时间: 2026-06-22（原始记录）；2026-07-04（更新）
 - 位置: `src/backend/code_generator.cpp`（疑似栈帧分配逻辑）
@@ -547,21 +592,21 @@ functional/f20_comprehensive.1.s:2612: Error: illegal operands `sw t2,2052(sp)'
 ### 排查建议
 
 1. 该用例涉及全局变量 + 函数调用 + 循环 + 短路求值等多种特性组合
-2. 先修复 ISSUE-003f（栈帧分配问题），通常综合性错误是同样根因的叠加
+2. 先修复 ISSUE-009（栈帧分配问题），通常综合性错误是同样根因的叠加
 3. 修复栈帧分配后如果仍有汇编错误，再逐阶段 dump 定位新问题
 
 ### 状态
 
 - 当前: 已修复
-- 修复版本: 与 ISSUE-003f 相同（同一修复）
+- 修复版本: 与 ISSUE-009 相同（同一修复）
 - 验证日期: 2026-07-04
 
 ---
 
-#### ISSUE-003i 短路求值与全局副作用交互错误
+## ISSUE-012 短路求值与全局副作用交互错误
 
 - 时间: 2026-06-22（原始记录）；2026-07-04（标记已修复）
-- 位置: `src/ir/ir_builder.cpp`（根因同 ISSUE-003a）
+- 位置: `src/ir/ir_builder.cpp`（根因同 ISSUE-004）
 - 关联文档: `docs/任务要求.md`, `docs/design/ir_design.md`
 - 用例: `f30_short_circuit_global_side_effect`
 
@@ -575,8 +620,8 @@ functional/f20_comprehensive.1.s:2612: Error: illegal operands `sw t2,2052(sp)'
 
 ### 状态更新
 
-- 根因与 ISSUE-003a（AND/OR 标签颠倒）相同
-- ISSUE-003a 修复后，该用例在评测系统上已通过
+- 根因与 ISSUE-004（AND/OR 标签颠倒）相同
+- ISSUE-004 修复后，该用例在评测系统上已通过
 - 确认短路求值的标签逻辑正确后，全局变量副作用交互也恢复正常
 
 ### 状态
@@ -584,12 +629,14 @@ functional/f20_comprehensive.1.s:2612: Error: illegal operands `sw t2,2052(sp)'
 - 当前: 已修复
 - 验证日期: 2026-07-04（评测系统 `f30_short_circuit_global_side_effect` 通过）
 
-#### ISSUE-003j `checkReturnOnAllPaths` 不处理 else-if（IfStmt 作为 elseStmt）导致 return 路径误报
+---
+
+## ISSUE-013 `checkReturnOnAllPaths` 不处理 else-if（IfStmt 作为 elseStmt）导致 return 路径误报
 
 - 时间: 2026-07-03
 - 位置: `src/semantic/semantic_analyzer.cpp:390-428`
 - 关联文档: `docs/任务要求.md`（"int 函数必须在每一条可能的执行路径上通过 return 语句返回一个 int 类型的值"）
-- 用例: `f08_short_circuit`（评测系统用例，ISSUE-003b 的原始崩溃修复后暴露的新问题）
+- 用例: `f08_short_circuit`（评测系统用例，ISSUE-005 的原始崩溃修复后暴露的新问题）
 
 ### 现象
 
@@ -601,7 +648,7 @@ Error(1:1): non-void function 'main' does not return a value on all control path
 ### 影响
 
 - 所有含 else-if 链结构的 `int` 类型函数被错误阻断编译
-- 评测用例 `f08_short_circuit` 因此失败（原始崩溃已由 ISSUE-003a 修复，但修复后暴露出此语义误报）
+- 评测用例 `f08_short_circuit` 因此失败（原始崩溃已由 ISSUE-004 修复，但修复后暴露出此语义误报）
 - 此 Bug 与短路求值本身无关，但与含有短路求值条件的 else-if 链测试用例恰好重叠
 
 ### 复现输入
@@ -622,7 +669,7 @@ int main() {
 
 ### 排查过程
 
-1. **确认错误现象**：`f08_short_circuit` 评测用例在 ISSUE-003a 修复后不再崩溃，但报语义错误 `Error(1:1): non-void function 'main' does not return a value on all control paths`
+1. **确认错误现象**：`f08_short_circuit` 评测用例在 ISSUE-004 修复后不再崩溃，但报语义错误 `Error(1:1): non-void function 'main' does not return a value on all control paths`
 
 2. **检查语义分析器**：定位到 `checkReturnOnAllPaths` 函数是执行 return 路径检查的唯一入口
 
@@ -666,46 +713,3 @@ int main() {
 - 修复版本: 在 `SemanticAnalyzer` 中新增 `checkIfReturnsOnAllPaths(IfStmt*)` 辅助方法，递归处理 if-else 链的 return 路径检查。`checkReturnOnAllPaths` 的 `IfStmt` 分支委托给该方法。当 `elseStmt` 为 `IfStmt`（else-if）时，`checkIfReturnsOnAllPaths` 递归调用自身，确保整个 else-if 链的所有分支都被检查。同时对 then/else 中 `ReturnStmt`、`BlockStmt`、`IfStmt` 三种情况均做处理。
 - 验证日期（本地）: 2026-07-03
 - 验证日期（评测系统）: 2026-07-04（`f08_short_circuit` 通过）
-
----
-
-## ISSUE-002 本机构建工具链不满足当前项目要求
-
-- 时间: 2026-06-26
-- 位置: `CMakeLists.txt`, `src/parser/parser.y`
-- 关联文档: `BUILD.md`, `docs/任务要求.md`
-
-### 现象
-
-当前本机环境缺少 `cmake` 命令，无法直接执行 `cmake -S . -B build`。同时系统自带 `bison` 版本为 2.3，无法识别当前 `parser.y` 中使用的 `%code` 指令。
-
-### 影响
-
-- 不能在本机通过 CMake 完整验证 `toyc` 和各单元测试目标。
-- Flex 可以生成 lexer，但 Bison 生成 parser 会失败，导致前端测试无法在当前环境闭环。
-- 后续阶段实现前需要在可用工具链环境中复核构建基线。
-
-### 复现命令
-
-```bash
-command -v cmake
-bison --version
-bison -d -o /tmp/parser.tab.cpp src/parser/parser.y
-```
-
-### 排查结果
-
-- `command -v cmake` 无输出。
-- `bison --version` 显示 `GNU Bison 2.3`。
-- `bison -d ... src/parser/parser.y` 报错：`invalid directive: %code`。
-
-### 本次处理
-
-- 先记录为环境类 Issue，不修改前端实现。
-- 后续在安装新版 CMake/Bison 后重新执行完整构建与测试。
-
-### 建议同步到 GitHub Issue
-
-- 标题: `Local toolchain cannot build current Flex/Bison pipeline`
-- 标签: `bug`, `build`, `toolchain`
-- Issue 描述重点: 说明本机缺少 CMake 且 Bison 2.3 过旧；建议团队统一使用新版 CMake 和 Bison，或在 CI 中固定工具链版本。
