@@ -167,6 +167,12 @@ std::string CodeGenerator::generate(const IRProgram& program) {
             std::string reg = "a" + std::to_string(i);
             emitStoreSP(out, reg.c_str(), vregSlot(layout, static_cast<uint32_t>(i)));
         }
+        // 超过 8 个的参数从调用者栈帧中加载
+        for (int i = 8; i < fn.paramCount && i < layout.vregCount; ++i) {
+            int stackOffset = layout.frameSize + (i - 8) * 4;
+            emitLoadSP(out, "t0", stackOffset);
+            emitStoreSP(out, "t0", vregSlot(layout, static_cast<uint32_t>(i)));
+        }
 
         for (const auto& inst : fn.instructions) {
             switch (inst.opcode) {
@@ -280,11 +286,29 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                     break;
                 case IROpcode::CALL:
                     if (inst.operands.size() != 2) break;
+                    // 先将前 8 个参数加载到 a0-a7（此时 sp 未调整，vreg 偏移量正确）
                     for (size_t i = 0; i < pendingParams.size() && i < 8; ++i) {
                         std::string argReg = "a" + std::to_string(i);
                         loadOperand(out, layout, pendingParams[i], argReg.c_str());
                     }
+                    // 处理超过 8 个的参数：通过栈传递
+                    if (pendingParams.size() > 8) {
+                        int stackArgSize = static_cast<int>(pendingParams.size() - 8) * 4;
+                        emitAdjustSP(out, stackArgSize, true);
+                        // 此时 sp 已调整，vreg 实际位置在 sp + vregSlot + stackArgSize
+                        for (size_t i = 8; i < pendingParams.size(); ++i) {
+                            int storeOffset = static_cast<int>(i - 8) * 4;
+                            int vregAdjOffset = vregSlot(layout, regId(pendingParams[i])) + stackArgSize;
+                            emitLoadSP(out, "t0", vregAdjOffset);
+                            emitStoreSP(out, "t0", storeOffset);
+                        }
+                    }
                     out << "    call " << stringValue(inst.operands[1]) << "\n";
+                    // 恢复栈指针
+                    if (pendingParams.size() > 8) {
+                        int stackArgSize = static_cast<int>(pendingParams.size() - 8) * 4;
+                        emitAdjustSP(out, stackArgSize, false);
+                    }
                     storeVReg(out, layout, inst.operands[0], "a0");
                     pendingParams.clear();
                     break;

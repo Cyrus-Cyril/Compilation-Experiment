@@ -1,0 +1,6 @@
+int f() {
+    int f = 42;
+}
+int main() {
+    return f();
+}

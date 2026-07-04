@@ -1,0 +1,8 @@
+int f() {
+    if (1) { return 1; }
+    if (1) { return 2; }
+    if (0) { return 0; }
+}
+int main() {
+    return f();
+}

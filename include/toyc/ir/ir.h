@@ -44,6 +44,7 @@ struct IRInstruction {
 struct IRFunction {
     std::string name;
     std::vector<IRInstruction> instructions;
+    int paramCount = 0;  ///< 函数参数个数（用于后端处理 >8 的栈传递参数）
 };
 
 /// 全局对象信息（用于后端生成 .data 段）

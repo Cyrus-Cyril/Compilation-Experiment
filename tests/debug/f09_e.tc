@@ -1,0 +1,11 @@
+int f() {
+    if (1) {
+        if (1) return 1;
+        else return 0;
+    } else {
+        return 0;
+    }
+}
+int main() {
+    return f();
+}

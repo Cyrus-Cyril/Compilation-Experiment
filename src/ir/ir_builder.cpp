@@ -508,6 +508,7 @@ void IRBuilderImpl::genFunc(FuncDef* func) {
     program_.functions.emplace_back();
     currentFunc_ = &program_.functions.back();
     currentFunc_->name = func->name;
+    currentFunc_->paramCount = static_cast<int>(func->params.size());
 
     nextStackOffset_ = 0;
 

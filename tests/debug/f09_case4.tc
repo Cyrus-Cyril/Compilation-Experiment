@@ -1,0 +1,7 @@
+int f = 42;
+int f() {
+    return f;
+}
+int main() {
+    return f();
+}
