@@ -1,0 +1,6 @@
+int main() {
+    int a = 42;
+    int b = 20 + 30;
+    int c = a * 2 + 100;
+    return c;
+}
