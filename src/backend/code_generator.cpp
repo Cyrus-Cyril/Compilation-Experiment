@@ -306,6 +306,24 @@ bool usesVReg(const IROperand& operand, uint32_t id) {
 
 bool isImmediateSafeConsumer(const IRInstruction& inst, uint32_t id) {
     switch (inst.opcode) {
+        case IROpcode::ADD:
+        case IROpcode::SUB:
+        case IROpcode::MUL:
+        case IROpcode::DIV:
+        case IROpcode::MOD:
+        case IROpcode::EQ:
+        case IROpcode::NE:
+        case IROpcode::LT:
+        case IROpcode::GT:
+        case IROpcode::LE:
+        case IROpcode::GE:
+        case IROpcode::AND:
+        case IROpcode::OR:
+            return inst.operands.size() >= 3 &&
+                   (usesVReg(inst.operands[1], id) || usesVReg(inst.operands[2], id));
+        case IROpcode::NEG:
+        case IROpcode::NOT:
+            return inst.operands.size() >= 2 && usesVReg(inst.operands[1], id);
         case IROpcode::STORE_LOCAL:
         case IROpcode::STORE_GLOBAL:
             return inst.operands.size() >= 2 && usesVReg(inst.operands[1], id);
@@ -313,6 +331,41 @@ bool isImmediateSafeConsumer(const IRInstruction& inst, uint32_t id) {
         case IROpcode::BNE:
             return inst.operands.size() >= 2 &&
                    (usesVReg(inst.operands[0], id) || usesVReg(inst.operands[1], id));
+        case IROpcode::RET:
+            return !inst.operands.empty() && usesVReg(inst.operands[0], id);
+        default:
+            return false;
+    }
+}
+
+bool instructionUsesVReg(const IRInstruction& inst, uint32_t id) {
+    switch (inst.opcode) {
+        case IROpcode::ADD:
+        case IROpcode::SUB:
+        case IROpcode::MUL:
+        case IROpcode::DIV:
+        case IROpcode::MOD:
+        case IROpcode::EQ:
+        case IROpcode::NE:
+        case IROpcode::LT:
+        case IROpcode::GT:
+        case IROpcode::LE:
+        case IROpcode::GE:
+        case IROpcode::AND:
+        case IROpcode::OR:
+            return inst.operands.size() >= 3 &&
+                   (usesVReg(inst.operands[1], id) || usesVReg(inst.operands[2], id));
+        case IROpcode::NEG:
+        case IROpcode::NOT:
+            return inst.operands.size() >= 2 && usesVReg(inst.operands[1], id);
+        case IROpcode::STORE_LOCAL:
+        case IROpcode::STORE_GLOBAL:
+            return inst.operands.size() >= 2 && usesVReg(inst.operands[1], id);
+        case IROpcode::BEQ:
+        case IROpcode::BNE:
+            return inst.operands.size() >= 2 &&
+                   (usesVReg(inst.operands[0], id) || usesVReg(inst.operands[1], id));
+        case IROpcode::PARAM:
         case IROpcode::RET:
             return !inst.operands.empty() && usesVReg(inst.operands[0], id);
         default:
@@ -524,8 +577,13 @@ std::string CodeGenerator::generate(const IRProgram& program) {
             auto canUseAliasOnly = [&](const IROperand& dest) {
                 if (dest.kind != OperandKind::VirtualReg || !nextInst) return false;
                 uint32_t id = regId(dest);
-                return hasRemainingUse(state, id) && state.remainingUses[id] == 1 &&
-                       isImmediateSafeConsumer(*nextInst, id);
+                if (!isImmediateSafeConsumer(*nextInst, id)) return false;
+                for (size_t later = instIndex + 2; later < codeFn.instructions.size(); ++later) {
+                    if (instructionUsesVReg(codeFn.instructions[later], id)) {
+                        return false;
+                    }
+                }
+                return true;
             };
 
             switch (inst.opcode) {
