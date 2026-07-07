@@ -63,13 +63,13 @@ static void test_minimal_function() {
     check(contains(asmText, ".globl main"), "exports main");
     check(contains(asmText, "main:"), "emits main label");
     check(contains(asmText, "addi sp, sp, -16"), "creates stack frame");
-    check(contains(asmText, "sw ra, 12(sp)"), "saves return address");
+    check(!contains(asmText, "sw ra,"), "omits return address save in leaf function");
     check(contains(asmText, "li t1, 42"), "loads constant operand");
     check(contains(asmText, "add t2, t0, t1"), "computes constant expression");
     check(contains(asmText, "lw a0,") || contains(asmText, "mv a0,") ||
           contains(asmText, "li a0,"), "loads return value into a0");
     check(contains(asmText, ".Lmain_return:"), "emits unified return label");
-    check(contains(asmText, "lw ra, 12(sp)"), "restores return address");
+    check(!contains(asmText, "lw ra,"), "omits return address restore in leaf function");
     check(contains(asmText, "ret"), "emits ret instruction");
 }
 
@@ -100,7 +100,9 @@ static void test_expressions_and_locals() {
     std::string asmText = gen.generate(program);
 
     check(contains(asmText, "mul "), "emits multiplication");
-    check(contains(asmText, "s1") || contains(asmText, "s2"), "uses saved-register cache");
+    check(contains(asmText, "s1") || contains(asmText, "s2") ||
+          contains(asmText, "t4") || contains(asmText, "t5") || contains(asmText, "t6"),
+          "uses register cache");
     check(contains(asmText, "slti t2,") || contains(asmText, "slt t2,"), "emits less-than comparison");
     check(contains(asmText, "seqz "), "emits logical not");
     check(contains(asmText, "neg "), "emits unary negation");
@@ -271,7 +273,9 @@ static void test_cached_return_value() {
     CodeGenerator gen;
     std::string asmText = gen.generate(program);
 
-    check(contains(asmText, "mv a0, s1"), "returns value from cached saved register");
+    check(contains(asmText, "mv a0, s1") || contains(asmText, "mv a0, t4") ||
+          contains(asmText, "mv a0, t5") || contains(asmText, "mv a0, t6"),
+          "returns value from cached register");
 }
 
 int main() {

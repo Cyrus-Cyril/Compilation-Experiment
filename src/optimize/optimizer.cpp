@@ -249,6 +249,202 @@ bool sameOperand(const IROperand& lhs, const IROperand& rhs) {
     return lhs.kind == rhs.kind && lhs.value == rhs.value;
 }
 
+uint32_t maxRegId(const std::vector<IRInstruction>& insts) {
+    uint32_t maxReg = 0;
+    bool hasReg = false;
+    for (const auto& inst : insts) {
+        for (const auto& operand : inst.operands) {
+            if (operand.kind == OperandKind::VirtualReg) {
+                hasReg = true;
+                maxReg = std::max(maxReg, regId(operand));
+            }
+        }
+    }
+    return hasReg ? maxReg : 0;
+}
+
+int maxLocalEnd(const std::vector<IRInstruction>& insts) {
+    int maxEnd = 0;
+    for (const auto& inst : insts) {
+        if (inst.opcode == IROpcode::LOAD_LOCAL && inst.operands.size() >= 2 &&
+            inst.operands[1].kind == OperandKind::Immediate) {
+            maxEnd = std::max(maxEnd, immValue(inst.operands[1]) + 4);
+        } else if (inst.opcode == IROpcode::STORE_LOCAL && !inst.operands.empty() &&
+                   inst.operands[0].kind == OperandKind::Immediate) {
+            maxEnd = std::max(maxEnd, immValue(inst.operands[0]) + 4);
+        }
+    }
+    return maxEnd;
+}
+
+bool isInlineCandidate(const IRFunction& fn) {
+    if (fn.name == "main" || fn.instructions.empty() || fn.instructions.size() > 80) {
+        return false;
+    }
+
+    int retCount = 0;
+    for (size_t i = 0; i < fn.instructions.size(); ++i) {
+        const auto& inst = fn.instructions[i];
+        switch (inst.opcode) {
+            case IROpcode::LABEL:
+            case IROpcode::JMP:
+            case IROpcode::BEQ:
+            case IROpcode::BNE:
+            case IROpcode::PARAM:
+            case IROpcode::CALL:
+            case IROpcode::STORE_GLOBAL:
+                return false;
+            case IROpcode::RET:
+                ++retCount;
+                if (i + 1 != fn.instructions.size() || inst.operands.size() != 1) {
+                    return false;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    return retCount == 1;
+}
+
+IROperand remapInlineOperand(
+    const IROperand& operand,
+    std::unordered_map<uint32_t, uint32_t>& regMap,
+    uint32_t& nextReg) {
+    if (operand.kind != OperandKind::VirtualReg) return operand;
+    uint32_t id = regId(operand);
+    auto found = regMap.find(id);
+    if (found == regMap.end()) {
+        found = regMap.emplace(id, nextReg++).first;
+    }
+    return IROperand::reg(found->second);
+}
+
+int remapInlineLocal(
+    int offset,
+    std::unordered_map<int, int>& localMap,
+    int& nextLocal) {
+    auto found = localMap.find(offset);
+    if (found == localMap.end()) {
+        found = localMap.emplace(offset, nextLocal).first;
+        nextLocal += 4;
+    }
+    return found->second;
+}
+
+IRInstruction remapInlineInstruction(
+    const IRInstruction& inst,
+    std::unordered_map<uint32_t, uint32_t>& regMap,
+    std::unordered_map<int, int>& localMap,
+    uint32_t& nextReg,
+    int& nextLocal) {
+    IRInstruction remapped = inst;
+    for (auto& operand : remapped.operands) {
+        operand = remapInlineOperand(operand, regMap, nextReg);
+    }
+
+    if (remapped.opcode == IROpcode::LOAD_LOCAL && remapped.operands.size() >= 2 &&
+        remapped.operands[1].kind == OperandKind::Immediate) {
+        remapped.operands[1] =
+            IROperand::imm(remapInlineLocal(immValue(remapped.operands[1]), localMap, nextLocal));
+    } else if (remapped.opcode == IROpcode::STORE_LOCAL && !remapped.operands.empty() &&
+               remapped.operands[0].kind == OperandKind::Immediate) {
+        remapped.operands[0] =
+            IROperand::imm(remapInlineLocal(immValue(remapped.operands[0]), localMap, nextLocal));
+    }
+
+    return remapped;
+}
+
+std::vector<IRInstruction> inlineCall(
+    const IRFunction& callee,
+    const std::vector<IROperand>& params,
+    const IROperand& callDest,
+    uint32_t& nextReg,
+    int& nextLocal) {
+    std::vector<IRInstruction> result;
+    result.reserve(callee.instructions.size() + params.size() + 1);
+
+    std::unordered_map<uint32_t, uint32_t> regMap;
+    std::unordered_map<int, int> localMap;
+
+    for (size_t i = 0; i < params.size(); ++i) {
+        uint32_t copiedParam = nextReg++;
+        regMap[static_cast<uint32_t>(i)] = copiedParam;
+        result.push_back(
+            {IROpcode::ADD, {IROperand::reg(copiedParam), params[i], IROperand::imm(0)}});
+    }
+
+    for (const auto& inst : callee.instructions) {
+        if (inst.opcode == IROpcode::RET) {
+            IROperand value = remapInlineOperand(inst.operands[0], regMap, nextReg);
+            result.push_back({IROpcode::ADD, {callDest, value, IROperand::imm(0)}});
+            continue;
+        }
+        result.push_back(remapInlineInstruction(inst, regMap, localMap, nextReg, nextLocal));
+    }
+
+    return result;
+}
+
+IRProgram inlineSmallFunctions(const IRProgram& input) {
+    IRProgram output = input;
+    std::unordered_map<std::string, const IRFunction*> candidates;
+    for (const auto& fn : output.functions) {
+        if (isInlineCandidate(fn)) {
+            candidates[fn.name] = &fn;
+        }
+    }
+    if (candidates.empty()) return output;
+
+    for (auto& fn : output.functions) {
+        std::vector<IRInstruction> result;
+        result.reserve(fn.instructions.size());
+        std::vector<IROperand> pendingParams;
+        uint32_t nextReg = maxRegId(fn.instructions) + 1;
+        int nextLocal = maxLocalEnd(fn.instructions);
+
+        auto flushParams = [&]() {
+            for (const auto& param : pendingParams) {
+                result.push_back({IROpcode::PARAM, {param}});
+            }
+            pendingParams.clear();
+        };
+
+        for (const auto& inst : fn.instructions) {
+            if (inst.opcode == IROpcode::PARAM && inst.operands.size() == 1) {
+                pendingParams.push_back(inst.operands[0]);
+                continue;
+            }
+
+            if (inst.opcode == IROpcode::CALL && inst.operands.size() == 2 &&
+                inst.operands[0].kind == OperandKind::VirtualReg &&
+                inst.operands[1].kind == OperandKind::FuncName) {
+                auto found = candidates.find(stringValue(inst.operands[1]));
+                if (found != candidates.end() &&
+                    pendingParams.size() == static_cast<size_t>(found->second->paramCount)) {
+                    std::vector<IRInstruction> inlined =
+                        inlineCall(*found->second, pendingParams, inst.operands[0], nextReg, nextLocal);
+                    result.insert(result.end(), inlined.begin(), inlined.end());
+                    pendingParams.clear();
+                    continue;
+                }
+            }
+
+            if (inst.opcode == IROpcode::CALL || inst.opcode == IROpcode::LABEL ||
+                inst.opcode == IROpcode::JMP || inst.opcode == IROpcode::BEQ ||
+                inst.opcode == IROpcode::BNE || inst.opcode == IROpcode::RET) {
+                flushParams();
+            }
+            result.push_back(inst);
+        }
+        flushParams();
+        fn.instructions = std::move(result);
+    }
+
+    return output;
+}
+
 bool isCopyAdd(const IRInstruction& inst, IROperand& source) {
     if (inst.opcode != IROpcode::ADD || inst.operands.size() != 3) return false;
     const auto& lhs = inst.operands[1];
@@ -484,6 +680,48 @@ std::vector<IRInstruction> removeDeadValueInsts(const std::vector<IRInstruction>
     return result;
 }
 
+bool hasControlFlow(const std::vector<IRInstruction>& insts) {
+    for (const auto& inst : insts) {
+        if (inst.opcode == IROpcode::LABEL || inst.opcode == IROpcode::JMP ||
+            inst.opcode == IROpcode::BEQ || inst.opcode == IROpcode::BNE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<IRInstruction> removeDeadLocalStores(const std::vector<IRInstruction>& insts) {
+    if (hasControlFlow(insts)) return insts;
+
+    std::unordered_set<int32_t> liveLocals;
+    std::vector<IRInstruction> reversed;
+    reversed.reserve(insts.size());
+
+    for (auto it = insts.rbegin(); it != insts.rend(); ++it) {
+        const IRInstruction& inst = *it;
+        if (inst.opcode == IROpcode::LOAD_LOCAL && inst.operands.size() >= 2 &&
+            inst.operands[1].kind == OperandKind::Immediate) {
+            liveLocals.insert(immValue(inst.operands[1]));
+            reversed.push_back(inst);
+            continue;
+        }
+
+        if (inst.opcode == IROpcode::STORE_LOCAL && !inst.operands.empty() &&
+            inst.operands[0].kind == OperandKind::Immediate) {
+            int32_t offset = immValue(inst.operands[0]);
+            if (!liveLocals.count(offset)) {
+                continue;
+            }
+            liveLocals.erase(offset);
+        }
+
+        reversed.push_back(inst);
+    }
+
+    std::reverse(reversed.begin(), reversed.end());
+    return reversed;
+}
+
 uint32_t maxLabelId(const std::vector<IRInstruction>& insts) {
     uint32_t maxLabel = 0;
     for (const auto& inst : insts) {
@@ -625,6 +863,10 @@ std::vector<IRInstruction> invertBranchOverJump(std::vector<IRInstruction> insts
 IRProgram Optimizer::optimize(const IRProgram& input) {
     IRProgram output = input;
 
+    for (int pass = 0; pass < 2; ++pass) {
+        output = inlineSmallFunctions(output);
+    }
+
     std::unordered_map<std::string, int32_t> globalConstants;
     for (const auto& global : output.globals) {
         if (global.isConst) {
@@ -634,6 +876,7 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
 
     for (auto& fn : output.functions) {
         std::unordered_map<uint32_t, int32_t> constants;
+        std::unordered_map<int32_t, int32_t> localConstants;
         std::vector<IRInstruction> optimized;
         bool unreachable = false;
 
@@ -644,6 +887,7 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
             if (inst.opcode == IROpcode::LABEL) {
                 unreachable = false;
                 constants.clear();
+                localConstants.clear();
                 optimized.push_back(std::move(inst));
                 continue;
             }
@@ -675,6 +919,29 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
             } else {
                 switch (inst.opcode) {
                     case IROpcode::LOAD_LOCAL:
+                        if (inst.operands.size() == 2 &&
+                            inst.operands[1].kind == OperandKind::Immediate) {
+                            auto found = localConstants.find(immValue(inst.operands[1]));
+                            if (found != localConstants.end()) {
+                                inst = {IROpcode::ADD,
+                                        {inst.operands[0], IROperand::imm(0), IROperand::imm(found->second)}};
+                                rememberDest(inst, constants, found->second);
+                                break;
+                            }
+                        }
+                        rememberDest(inst, constants, std::nullopt);
+                        break;
+                    case IROpcode::STORE_LOCAL:
+                        if (inst.operands.size() >= 2 &&
+                            inst.operands[0].kind == OperandKind::Immediate) {
+                            auto value = constValue(inst.operands[1], constants);
+                            if (value) {
+                                localConstants[immValue(inst.operands[0])] = *value;
+                            } else {
+                                localConstants.erase(immValue(inst.operands[0]));
+                            }
+                        }
+                        break;
                     case IROpcode::CALL:
                         rememberDest(inst, constants, std::nullopt);
                         break;
@@ -693,6 +960,7 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
                         break;
                     case IROpcode::JMP:
                         constants.clear();
+                        localConstants.clear();
                         unreachable = true;
                         break;
                     case IROpcode::BEQ:
@@ -709,6 +977,7 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
                             }
                         }
                         constants.clear();
+                        localConstants.clear();
                         break;
                     }
                     default:
@@ -727,6 +996,7 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
             size_t before = fn.instructions.size();
             fn.instructions = propagateCopiesAndCse(std::move(fn.instructions));
             fn.instructions = removeDeadValueInsts(fn.instructions);
+            fn.instructions = removeDeadLocalStores(fn.instructions);
             fn.instructions = invertBranchOverJump(std::move(fn.instructions));
             fn.instructions = rewriteJumpChains(std::move(fn.instructions));
             if (fn.instructions.size() == before) break;

@@ -51,6 +51,7 @@ struct FunctionLayout {
     int saveBase = 0;
     int raOffset = 12;
     bool hasCall = false;
+    bool saveRa = true;
     std::unordered_map<int, std::string> localRegs;
     std::unordered_map<uint32_t, std::string> vregRegs;
     std::vector<std::string> savedRegs;
@@ -162,6 +163,7 @@ FunctionLayout buildLayout(const IRFunction& fn) {
 
     FunctionLayout layout;
     layout.hasCall = hasCall;
+    layout.saveRa = hasCall;
     layout.localSize = align16(maxLocalEnd);
     layout.vregBase = layout.localSize;
     layout.vregCount = hasReg ? static_cast<int>(maxReg + 1) : 0;
@@ -169,40 +171,53 @@ FunctionLayout buildLayout(const IRFunction& fn) {
 
     std::vector<std::string> savedAvailableRegs = {
         "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11"};
-    std::vector<std::string> localAvailableRegs = savedAvailableRegs;
+    std::vector<std::string> localAvailableRegs;
     if (!layout.hasCall) {
         localAvailableRegs.push_back("t4");
         localAvailableRegs.push_back("t5");
         localAvailableRegs.push_back("t6");
+        localAvailableRegs.insert(
+            localAvailableRegs.end(), savedAvailableRegs.begin(), savedAvailableRegs.end());
+    } else {
+        localAvailableRegs = savedAvailableRegs;
     }
-    size_t nextSaved = 0;
+    std::vector<std::string> vregAvailableRegs = layout.hasCall ? savedAvailableRegs : localAvailableRegs;
+    size_t nextLocal = 0;
     std::unordered_set<std::string> usedSaved;
+    std::unordered_set<std::string> allocatedRegs;
 
     for (const auto& [offset, count] : sortedHotEntries(localHeat)) {
-        if (nextSaved >= localAvailableRegs.size()) break;
+        if (nextLocal >= localAvailableRegs.size()) break;
         if (count < 2) continue;
-        const std::string& reg = localAvailableRegs[nextSaved++];
+        const std::string& reg = localAvailableRegs[nextLocal++];
         layout.localRegs[offset] = reg;
+        allocatedRegs.insert(reg);
         if (!reg.empty() && reg[0] == 's') usedSaved.insert(reg);
     }
 
     for (const auto& [id, count] : sortedHotEntries(vregHeat)) {
-        if (nextSaved >= savedAvailableRegs.size()) break;
         if (count < 3) continue;
-        const std::string& reg = savedAvailableRegs[nextSaved++];
-        layout.vregRegs[id] = reg;
-        usedSaved.insert(reg);
+        auto regIt = std::find_if(vregAvailableRegs.begin(), vregAvailableRegs.end(),
+                                  [&](const std::string& reg) {
+                                      return !allocatedRegs.count(reg);
+                                  });
+        if (regIt == vregAvailableRegs.end()) break;
+        layout.vregRegs[id] = *regIt;
+        allocatedRegs.insert(*regIt);
+        if (!regIt->empty() && (*regIt)[0] == 's') usedSaved.insert(*regIt);
     }
 
     for (const auto& reg : savedAvailableRegs) {
         if (usedSaved.count(reg)) layout.savedRegs.push_back(reg);
     }
 
-    int requiredSize = layout.localSize + vregSize + static_cast<int>(layout.savedRegs.size()) * 4 + 4;
-    layout.frameSize = align16(requiredSize);
-    if (layout.frameSize < 16) layout.frameSize = 16;
-    layout.raOffset = layout.frameSize - 4;
-    layout.saveBase = layout.raOffset - static_cast<int>(layout.savedRegs.size()) * 4;
+    int savedSize = static_cast<int>(layout.savedRegs.size()) * 4;
+    int raSize = layout.saveRa ? 4 : 0;
+    int requiredSize = layout.localSize + vregSize + savedSize + raSize;
+    layout.frameSize = requiredSize == 0 ? 0 : align16(requiredSize);
+    if (requiredSize > 0 && layout.frameSize < 16) layout.frameSize = 16;
+    layout.raOffset = layout.saveRa ? layout.frameSize - 4 : -1;
+    layout.saveBase = layout.frameSize - raSize - savedSize;
     return layout;
 }
 
@@ -550,11 +565,15 @@ std::string CodeGenerator::generate(const IRProgram& program) {
         state.remainingUses = buildUseCounts(codeFn);
 
         out << fn.name << ":\n";
-        emitAdjustSP(out, layout.frameSize, true);
+        if (layout.frameSize > 0) {
+            emitAdjustSP(out, layout.frameSize, true);
+        }
         for (size_t i = 0; i < layout.savedRegs.size(); ++i) {
             emitStoreSP(out, layout.savedRegs[i].c_str(), layout.saveBase + static_cast<int>(i) * 4);
         }
-        emitStoreSP(out, "ra", layout.raOffset);
+        if (layout.saveRa) {
+            emitStoreSP(out, "ra", layout.raOffset);
+        }
         for (int i = 0; i < fn.paramCount && i < layout.vregCount && i < 8; ++i) {
             std::string reg = "a" + std::to_string(i);
             aliasVReg(out, layout, state, IROperand::reg(static_cast<uint32_t>(i)), reg);
@@ -883,11 +902,15 @@ std::string CodeGenerator::generate(const IRProgram& program) {
         }
 
         out << returnLabel << ":\n";
-        emitLoadSP(out, "ra", layout.raOffset);
+        if (layout.saveRa) {
+            emitLoadSP(out, "ra", layout.raOffset);
+        }
         for (int i = static_cast<int>(layout.savedRegs.size()) - 1; i >= 0; --i) {
             emitLoadSP(out, layout.savedRegs[static_cast<size_t>(i)].c_str(), layout.saveBase + i * 4);
         }
-        emitAdjustSP(out, layout.frameSize, false);
+        if (layout.frameSize > 0) {
+            emitAdjustSP(out, layout.frameSize, false);
+        }
         out << "    ret\n";
     }
 

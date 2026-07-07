@@ -105,16 +105,27 @@ static void checkCaseSpecificAssembly(const std::string& caseName, const std::st
             check(contains(asmText, "mul "), prefix + " keeps arithmetic multiply path");
         }
     } else if (caseName == "function_call_ret9") {
-        check(contains(asmText, "call add"), prefix + " emits call to add");
+        if (optimize) {
+            check(!contains(asmText, "call add"), prefix + " inlines small add function");
+        } else {
+            check(contains(asmText, "call add"), prefix + " emits call to add");
+        }
     } else if (caseName == "globals_ret42") {
         check(contains(asmText, ".data"), prefix + " emits data section for globals");
         check(contains(asmText, "g:"), prefix + " emits global label g");
     } else if (caseName == "if_else_ret11") {
         check(contains(asmText, ".Lmain_"), prefix + " emits branch labels");
     } else if (caseName == "locals_ret9") {
-        check(contains(asmText, "sw t0, 0(sp)") || contains(asmText, "sw t0, 4(sp)") ||
-              contains(asmText, "sw t0, 8(sp)") || contains(asmText, "s1") ||
-              contains(asmText, "s2"), prefix + " materializes local storage");
+        if (optimize) {
+            check(contains(asmText, "li a0, 9") || contains(asmText, "s1") ||
+                  contains(asmText, "s2"), prefix + " folds or materializes local storage");
+        } else {
+            check(contains(asmText, "sw t0, 0(sp)") || contains(asmText, "sw t0, 4(sp)") ||
+                  contains(asmText, "sw t0, 8(sp)") || contains(asmText, "s1") ||
+                  contains(asmText, "s2") || contains(asmText, "t4") ||
+                  contains(asmText, "t5") || contains(asmText, "t6"),
+                  prefix + " materializes local storage");
+        }
     } else if (caseName == "recursion_ret120") {
         check(contains(asmText, "call fact"), prefix + " emits recursive call");
     } else if (caseName == "return_const_ret42") {
@@ -129,7 +140,9 @@ static void checkCaseSpecificAssembly(const std::string& caseName, const std::st
     } else if (caseName == "loop_heavy_ret100") {
         check(contains(asmText, ".Lmain_"), prefix + " emits hot-loop labels");
         check(contains(asmText, "j .Lmain_"), prefix + " emits hot-loop back edge");
-        check(contains(asmText, "s1") || contains(asmText, "s2"), prefix + " can use register cache");
+        check(contains(asmText, "s1") || contains(asmText, "s2") ||
+              contains(asmText, "t4") || contains(asmText, "t5") ||
+              contains(asmText, "t6"), prefix + " can use register cache");
         if (optimize) {
             int memoryLike = countAsmToken(asmText, "lw") + countAsmToken(asmText, "sw") +
                              countAsmToken(asmText, "mv") + countAsmToken(asmText, "j");

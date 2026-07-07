@@ -206,6 +206,54 @@ static void test_tail_recursion_rewrite() {
     check(hasBackJump, "rewrites tail recursion to loop jump");
 }
 
+static void test_small_function_inlining() {
+    std::printf("\n-- Small Function Inlining --\n");
+
+    IRProgram program;
+
+    IRFunction addFn;
+    addFn.name = "add";
+    addFn.paramCount = 2;
+    addFn.instructions.push_back(
+        {IROpcode::STORE_LOCAL, {IROperand::imm(0), IROperand::reg(0)}});
+    addFn.instructions.push_back(
+        {IROpcode::STORE_LOCAL, {IROperand::imm(4), IROperand::reg(1)}});
+    addFn.instructions.push_back(
+        {IROpcode::LOAD_LOCAL, {IROperand::reg(2), IROperand::imm(0)}});
+    addFn.instructions.push_back(
+        {IROpcode::LOAD_LOCAL, {IROperand::reg(3), IROperand::imm(4)}});
+    addFn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(4), IROperand::reg(2), IROperand::reg(3)}});
+    addFn.instructions.push_back({IROpcode::RET, {IROperand::reg(4)}});
+    program.functions.push_back(std::move(addFn));
+
+    IRFunction mainFn;
+    mainFn.name = "main";
+    mainFn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(0), IROperand::imm(0), IROperand::imm(4)}});
+    mainFn.instructions.push_back({IROpcode::PARAM, {IROperand::reg(0)}});
+    mainFn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(1), IROperand::imm(0), IROperand::imm(5)}});
+    mainFn.instructions.push_back({IROpcode::PARAM, {IROperand::reg(1)}});
+    mainFn.instructions.push_back({IROpcode::CALL, {IROperand::reg(2), IROperand::func("add")}});
+    mainFn.instructions.push_back({IROpcode::RET, {IROperand::reg(2)}});
+    program.functions.push_back(std::move(mainFn));
+
+    IRProgram optimized = Optimizer{}.optimize(program);
+    const auto& mainInsts = optimized.functions[1].instructions;
+
+    bool hasCall = false;
+    for (const auto& inst : mainInsts) {
+        if (inst.opcode == IROpcode::CALL) hasCall = true;
+    }
+
+    check(!hasCall, "inlines small straight-line function into caller");
+    check(mainInsts.size() == 1, "folds inlined constant helper call");
+    check(mainInsts[0].opcode == IROpcode::RET, "keeps final return after inlining");
+    check(mainInsts[0].operands[0].kind == OperandKind::Immediate, "returns folded inlined value");
+    check(immAt(mainInsts[0], 0) == 9, "inlined helper returns expected value");
+}
+
 int main() {
     std::printf("=== ToyC Optimizer Unit Tests ===\n\n");
 
@@ -216,6 +264,7 @@ int main() {
     test_copy_cse_and_dead_code();
     test_global_const_propagation();
     test_tail_recursion_rewrite();
+    test_small_function_inlining();
 
     std::printf("\n==============================\n");
     std::printf("  %d / %d tests passed\n", pass_count, test_count);
