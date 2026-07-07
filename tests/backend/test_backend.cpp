@@ -23,6 +23,21 @@ static bool contains(const std::string& text, const char* needle) {
     return text.find(needle) != std::string::npos;
 }
 
+static bool appearsBefore(const std::string& text, const char* lhs, const char* rhs) {
+    size_t lhsPos = text.find(lhs);
+    size_t rhsPos = text.find(rhs);
+    return lhsPos != std::string::npos && rhsPos != std::string::npos && lhsPos < rhsPos;
+}
+
+static bool appearsInOrder(const std::string& text, const char* first, const char* second, const char* third) {
+    size_t firstPos = text.find(first);
+    if (firstPos == std::string::npos) return false;
+    size_t secondPos = text.find(second, firstPos + std::string(first).size());
+    if (secondPos == std::string::npos) return false;
+    size_t thirdPos = text.find(third, secondPos + std::string(second).size());
+    return thirdPos != std::string::npos;
+}
+
 static IRProgram buildReturnConstProgram(int value) {
     IRProgram program;
     IRFunction mainFn;
@@ -169,6 +184,10 @@ static void test_function_calls() {
     check(contains(asmText, "a1"), "loads second argument before call");
     check(contains(asmText, "call add"), "emits call instruction");
     check(contains(asmText, "a0"), "handles call return value");
+    check(appearsBefore(asmText, "add t2, t0, t1\n    sw t2,", "li t1, 3"),
+          "spills first argument before reusing scratch register");
+    check(appearsInOrder(asmText, "li t1, 3", "sw t2,", "lw a0,"),
+          "spills second argument before loading call arguments");
 }
 
 static void test_recursive_call_shape() {
