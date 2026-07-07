@@ -39,12 +39,10 @@ static void test_constant_folding() {
     IRProgram optimized = Optimizer{}.optimize(program);
     const auto& insts = optimized.functions[0].instructions;
 
-    check(insts[0].opcode == IROpcode::ADD, "keeps folded constants as ADD pseudo-load");
-    check(insts[0].operands[1].kind == OperandKind::Immediate, "first folded lhs is immediate");
-    check(immAt(insts[0], 2) == 3, "folds 1+2 to 3");
-    check(immAt(insts[1], 2) == 9, "propagates and folds 3*3 to 9");
-    check(insts[2].operands[0].kind == OperandKind::Immediate, "propagates return operand");
-    check(immAt(insts[2], 0) == 9, "return uses folded value");
+    check(insts.size() == 1, "removes dead folded temporaries");
+    check(insts[0].opcode == IROpcode::RET, "keeps final return");
+    check(insts[0].operands[0].kind == OperandKind::Immediate, "propagates return operand");
+    check(immAt(insts[0], 0) == 9, "return uses folded value");
 }
 
 static void test_unreachable_after_return() {
@@ -87,11 +85,11 @@ static void test_algebraic_simplification() {
     IRProgram optimized = Optimizer{}.optimize(program);
     const auto& insts = optimized.functions[0].instructions;
 
-    check(insts[1].opcode == IROpcode::ADD, "rewrites multiply-by-one to add-copy");
-    check(insts[1].operands[1].kind == OperandKind::VirtualReg, "copy keeps source register");
-    check(insts[1].operands[2].kind == OperandKind::Immediate, "copy uses zero immediate");
-    check(immAt(insts[1], 2) == 0, "copy immediate is zero");
-    check(insts[2].opcode == IROpcode::ADD, "keeps add-zero as copy form");
+    check(insts.size() == 2, "removes dead algebraic copy chain");
+    check(insts[0].opcode == IROpcode::LOAD_LOCAL, "keeps live local load");
+    check(insts[1].opcode == IROpcode::RET, "keeps return");
+    check(insts[1].operands[0].kind == OperandKind::VirtualReg, "return uses copied source register");
+    check(std::get<uint32_t>(insts[1].operands[0].value) == 0, "return resolves to original register");
 }
 
 static void test_constant_branch_and_jump_cleanup() {
@@ -116,6 +114,98 @@ static void test_constant_branch_and_jump_cleanup() {
     check(insts[1].opcode == IROpcode::RET, "keeps return after folded branches");
 }
 
+static void test_copy_cse_and_dead_code() {
+    std::printf("\n-- Copy Propagation CSE And DCE --\n");
+
+    IRProgram program;
+    IRFunction fn;
+    fn.name = "main";
+    fn.instructions.push_back(
+        {IROpcode::LOAD_LOCAL, {IROperand::reg(0), IROperand::imm(0)}});
+    fn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(1), IROperand::reg(0), IROperand::imm(1)}});
+    fn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(2), IROperand::reg(0), IROperand::imm(1)}});
+    fn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(3), IROperand::reg(1), IROperand::reg(2)}});
+    fn.instructions.push_back(
+        {IROpcode::MUL, {IROperand::reg(4), IROperand::imm(9), IROperand::imm(9)}});
+    fn.instructions.push_back({IROpcode::RET, {IROperand::reg(3)}});
+    program.functions.push_back(std::move(fn));
+
+    IRProgram optimized = Optimizer{}.optimize(program);
+    const auto& insts = optimized.functions[0].instructions;
+
+    int repeatedAddCount = 0;
+    bool hasDeadMul = false;
+    for (const auto& inst : insts) {
+        if (inst.opcode == IROpcode::ADD && inst.operands.size() == 3 &&
+            inst.operands[1].kind == OperandKind::VirtualReg &&
+            std::get<uint32_t>(inst.operands[1].value) == 0 &&
+            inst.operands[2].kind == OperandKind::Immediate &&
+            immAt(inst, 2) == 1) {
+            ++repeatedAddCount;
+        }
+        if (inst.opcode == IROpcode::MUL) hasDeadMul = true;
+    }
+
+    check(repeatedAddCount == 1, "eliminates repeated basic-block expression");
+    check(!hasDeadMul, "removes unused pure computation");
+}
+
+static void test_global_const_propagation() {
+    std::printf("\n-- Global Const Propagation --\n");
+
+    IRProgram program;
+    program.globals.push_back({"N", true, 5});
+    IRFunction fn;
+    fn.name = "main";
+    fn.instructions.push_back(
+        {IROpcode::LOAD_GLOBAL, {IROperand::reg(0), IROperand::global("N")}});
+    fn.instructions.push_back({IROpcode::RET, {IROperand::reg(0)}});
+    program.functions.push_back(std::move(fn));
+
+    IRProgram optimized = Optimizer{}.optimize(program);
+    const auto& insts = optimized.functions[0].instructions;
+
+    check(insts.size() == 1, "removes const global load");
+    check(insts[0].opcode == IROpcode::RET, "keeps return");
+    check(insts[0].operands[0].kind == OperandKind::Immediate, "returns propagated const");
+    check(immAt(insts[0], 0) == 5, "global const value is propagated");
+}
+
+static void test_tail_recursion_rewrite() {
+    std::printf("\n-- Tail Recursion Rewrite --\n");
+
+    IRProgram program;
+    IRFunction fn;
+    fn.name = "fact";
+    fn.paramCount = 1;
+    fn.instructions.push_back(
+        {IROpcode::STORE_LOCAL, {IROperand::imm(0), IROperand::reg(0)}});
+    fn.instructions.push_back(
+        {IROpcode::LOAD_LOCAL, {IROperand::reg(1), IROperand::imm(0)}});
+    fn.instructions.push_back(
+        {IROpcode::SUB, {IROperand::reg(2), IROperand::reg(1), IROperand::imm(1)}});
+    fn.instructions.push_back({IROpcode::PARAM, {IROperand::reg(2)}});
+    fn.instructions.push_back({IROpcode::CALL, {IROperand::reg(3), IROperand::func("fact")}});
+    fn.instructions.push_back({IROpcode::RET, {IROperand::reg(3)}});
+    program.functions.push_back(std::move(fn));
+
+    IRProgram optimized = Optimizer{}.optimize(program);
+    const auto& insts = optimized.functions[0].instructions;
+
+    bool hasSelfCall = false;
+    bool hasBackJump = false;
+    for (const auto& inst : insts) {
+        if (inst.opcode == IROpcode::CALL) hasSelfCall = true;
+        if (inst.opcode == IROpcode::JMP) hasBackJump = true;
+    }
+
+    check(!hasSelfCall, "removes tail self call");
+    check(hasBackJump, "rewrites tail recursion to loop jump");
+}
+
 int main() {
     std::printf("=== ToyC Optimizer Unit Tests ===\n\n");
 
@@ -123,6 +213,9 @@ int main() {
     test_unreachable_after_return();
     test_algebraic_simplification();
     test_constant_branch_and_jump_cleanup();
+    test_copy_cse_and_dead_code();
+    test_global_const_propagation();
+    test_tail_recursion_rewrite();
 
     std::printf("\n==============================\n");
     std::printf("  %d / %d tests passed\n", pass_count, test_count);

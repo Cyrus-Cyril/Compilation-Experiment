@@ -118,12 +118,11 @@ static void test_globals_and_control_flow() {
     check(contains(asmText, "lw t1, 0(t0)"), "loads global value");
     check(contains(asmText, "la t1, g"), "loads global address for store");
     check(contains(asmText, "sw t0, 0(t1)"), "stores global value");
-    check(contains(asmText, "bne t0, zero, .Lmain_1") ||
-          contains(asmText, "bne t0, t1, .Lmain_1"), "emits conditional branch");
+    check(contains(asmText, "bne ") && contains(asmText, ".Lmain_1"), "emits conditional branch");
     check(contains(asmText, "j .Lmain_2"), "emits jump");
     check(contains(asmText, ".Lmain_1:"), "emits first label");
     check(contains(asmText, ".Lmain_2:"), "emits second label");
-    check(contains(asmText, "or t2, t0, t1"), "emits logical or");
+    check(contains(asmText, "or ") && contains(asmText, "snez "), "emits logical or");
 }
 
 static void test_function_calls() {
@@ -188,6 +187,27 @@ static void test_recursive_call_shape() {
     check(contains(asmText, "call fact"), "emits recursive call");
 }
 
+static void test_cached_return_value() {
+    std::printf("\n-- Cached Return Value --\n");
+
+    IRProgram program;
+    IRFunction mainFn;
+    mainFn.name = "main";
+    mainFn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(0), IROperand::imm(0), IROperand::imm(7)}});
+    mainFn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(1), IROperand::reg(0), IROperand::imm(1)}});
+    mainFn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(2), IROperand::reg(0), IROperand::imm(2)}});
+    mainFn.instructions.push_back({IROpcode::RET, {IROperand::reg(0)}});
+    program.functions.push_back(std::move(mainFn));
+
+    CodeGenerator gen;
+    std::string asmText = gen.generate(program);
+
+    check(contains(asmText, "mv a0, s1"), "returns value from cached saved register");
+}
+
 int main() {
     std::printf("=== ToyC Backend Unit Tests ===\n\n");
 
@@ -196,6 +216,7 @@ int main() {
     test_globals_and_control_flow();
     test_function_calls();
     test_recursive_call_shape();
+    test_cached_return_value();
 
     std::printf("\n==============================\n");
     std::printf("  %d / %d tests passed\n", pass_count, test_count);

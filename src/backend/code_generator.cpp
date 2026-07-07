@@ -156,6 +156,15 @@ const std::string* vregReg(const FunctionLayout& layout, uint32_t id) {
     return found == layout.vregRegs.end() ? nullptr : &found->second;
 }
 
+std::string resultReg(const FunctionLayout& layout, const IROperand& operand, const char* fallback) {
+    if (operand.kind == OperandKind::VirtualReg) {
+        if (const std::string* cached = vregReg(layout, regId(operand))) {
+            return *cached;
+        }
+    }
+    return fallback;
+}
+
 void emitLoadSP(std::ostringstream& out, const char* rd, int offset) {
     if (offset >= -2048 && offset <= 2047) {
         out << "    lw " << rd << ", " << offset << "(sp)\n";
@@ -198,6 +207,17 @@ void loadOperand(std::ostringstream& out, const FunctionLayout& layout,
         }
         emitLoadSP(out, physReg, vregSlot(layout, regId(operand)));
     }
+}
+
+std::string operandReg(std::ostringstream& out, const FunctionLayout& layout,
+                       const IROperand& operand, const char* scratchReg) {
+    if (operand.kind == OperandKind::VirtualReg) {
+        if (const std::string* cached = vregReg(layout, regId(operand))) {
+            return *cached;
+        }
+    }
+    loadOperand(out, layout, operand, scratchReg);
+    return scratchReg;
 }
 
 void storeVReg(std::ostringstream& out, const FunctionLayout& layout,
@@ -293,92 +313,101 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                 case IROpcode::AND:
                 case IROpcode::OR:
                     if (inst.operands.size() != 3) break;
+                    {
+                    const std::string rd = resultReg(layout, inst.operands[0], "t2");
                     if (inst.opcode == IROpcode::ADD &&
                         inst.operands[1].kind != OperandKind::Immediate &&
                         inst.operands[2].kind == OperandKind::Immediate &&
                         fits12(immValue(inst.operands[2]))) {
-                        loadOperand(out, layout, inst.operands[1], "t0");
-                        out << "    addi t2, t0, " << immValue(inst.operands[2]) << "\n";
-                        storeVReg(out, layout, inst.operands[0], "t2");
+                        const std::string lhs = operandReg(out, layout, inst.operands[1], "t0");
+                        out << "    addi " << rd << ", " << lhs << ", " << immValue(inst.operands[2]) << "\n";
+                        storeVReg(out, layout, inst.operands[0], rd.c_str());
                         break;
                     }
                     if (inst.opcode == IROpcode::ADD &&
                         inst.operands[1].kind == OperandKind::Immediate &&
                         inst.operands[2].kind != OperandKind::Immediate &&
                         fits12(immValue(inst.operands[1]))) {
-                        loadOperand(out, layout, inst.operands[2], "t0");
-                        out << "    addi t2, t0, " << immValue(inst.operands[1]) << "\n";
-                        storeVReg(out, layout, inst.operands[0], "t2");
+                        const std::string rhs = operandReg(out, layout, inst.operands[2], "t0");
+                        out << "    addi " << rd << ", " << rhs << ", " << immValue(inst.operands[1]) << "\n";
+                        storeVReg(out, layout, inst.operands[0], rd.c_str());
                         break;
                     }
                     if (inst.opcode == IROpcode::SUB &&
                         inst.operands[1].kind != OperandKind::Immediate &&
                         inst.operands[2].kind == OperandKind::Immediate &&
                         fits12(-immValue(inst.operands[2]))) {
-                        loadOperand(out, layout, inst.operands[1], "t0");
-                        out << "    addi t2, t0, " << -immValue(inst.operands[2]) << "\n";
-                        storeVReg(out, layout, inst.operands[0], "t2");
+                        const std::string lhs = operandReg(out, layout, inst.operands[1], "t0");
+                        out << "    addi " << rd << ", " << lhs << ", " << -immValue(inst.operands[2]) << "\n";
+                        storeVReg(out, layout, inst.operands[0], rd.c_str());
                         break;
                     }
                     if (inst.opcode == IROpcode::LT &&
                         inst.operands[1].kind != OperandKind::Immediate &&
                         inst.operands[2].kind == OperandKind::Immediate &&
                         fits12(immValue(inst.operands[2]))) {
-                        loadOperand(out, layout, inst.operands[1], "t0");
-                        out << "    slti t2, t0, " << immValue(inst.operands[2]) << "\n";
-                        storeVReg(out, layout, inst.operands[0], "t2");
+                        const std::string lhs = operandReg(out, layout, inst.operands[1], "t0");
+                        out << "    slti " << rd << ", " << lhs << ", " << immValue(inst.operands[2]) << "\n";
+                        storeVReg(out, layout, inst.operands[0], rd.c_str());
                         break;
                     }
-                    loadOperand(out, layout, inst.operands[1], "t0");
-                    loadOperand(out, layout, inst.operands[2], "t1");
+                    const std::string lhs = operandReg(out, layout, inst.operands[1], "t0");
+                    const std::string rhs = operandReg(out, layout, inst.operands[2], "t1");
                     switch (inst.opcode) {
-                        case IROpcode::ADD: out << "    add t2, t0, t1\n"; break;
-                        case IROpcode::SUB: out << "    sub t2, t0, t1\n"; break;
-                        case IROpcode::MUL: out << "    mul t2, t0, t1\n"; break;
-                        case IROpcode::DIV: out << "    div t2, t0, t1\n"; break;
-                        case IROpcode::MOD: out << "    rem t2, t0, t1\n"; break;
-                        case IROpcode::LT:  out << "    slt t2, t0, t1\n"; break;
-                        case IROpcode::GT:  out << "    slt t2, t1, t0\n"; break;
+                        case IROpcode::ADD: out << "    add " << rd << ", " << lhs << ", " << rhs << "\n"; break;
+                        case IROpcode::SUB: out << "    sub " << rd << ", " << lhs << ", " << rhs << "\n"; break;
+                        case IROpcode::MUL: out << "    mul " << rd << ", " << lhs << ", " << rhs << "\n"; break;
+                        case IROpcode::DIV: out << "    div " << rd << ", " << lhs << ", " << rhs << "\n"; break;
+                        case IROpcode::MOD: out << "    rem " << rd << ", " << lhs << ", " << rhs << "\n"; break;
+                        case IROpcode::LT:  out << "    slt " << rd << ", " << lhs << ", " << rhs << "\n"; break;
+                        case IROpcode::GT:  out << "    slt " << rd << ", " << rhs << ", " << lhs << "\n"; break;
                         case IROpcode::LE:
-                            out << "    slt t2, t1, t0\n";
-                            out << "    xori t2, t2, 1\n";
+                            out << "    slt " << rd << ", " << rhs << ", " << lhs << "\n";
+                            out << "    xori " << rd << ", " << rd << ", 1\n";
                             break;
                         case IROpcode::GE:
-                            out << "    slt t2, t0, t1\n";
-                            out << "    xori t2, t2, 1\n";
+                            out << "    slt " << rd << ", " << lhs << ", " << rhs << "\n";
+                            out << "    xori " << rd << ", " << rd << ", 1\n";
                             break;
                         case IROpcode::EQ:
-                            out << "    sub t2, t0, t1\n";
-                            out << "    seqz t2, t2\n";
+                            out << "    sub " << rd << ", " << lhs << ", " << rhs << "\n";
+                            out << "    seqz " << rd << ", " << rd << "\n";
                             break;
                         case IROpcode::NE:
-                            out << "    sub t2, t0, t1\n";
-                            out << "    snez t2, t2\n";
+                            out << "    sub " << rd << ", " << lhs << ", " << rhs << "\n";
+                            out << "    snez " << rd << ", " << rd << "\n";
                             break;
                         case IROpcode::AND:
-                            out << "    snez t0, t0\n";
-                            out << "    snez t1, t1\n";
-                            out << "    and t2, t0, t1\n";
+                            out << "    snez t0, " << lhs << "\n";
+                            out << "    snez t1, " << rhs << "\n";
+                            out << "    and " << rd << ", t0, t1\n";
                             break;
                         case IROpcode::OR:
-                            out << "    or t2, t0, t1\n";
-                            out << "    snez t2, t2\n";
+                            out << "    or " << rd << ", " << lhs << ", " << rhs << "\n";
+                            out << "    snez " << rd << ", " << rd << "\n";
                             break;
                         default: break;
                     }
-                    storeVReg(out, layout, inst.operands[0], "t2");
+                    storeVReg(out, layout, inst.operands[0], rd.c_str());
+                    }
                     break;
                 case IROpcode::NEG:
                     if (inst.operands.size() != 2) break;
-                    loadOperand(out, layout, inst.operands[1], "t0");
-                    out << "    neg t1, t0\n";
-                    storeVReg(out, layout, inst.operands[0], "t1");
+                    {
+                    const std::string rd = resultReg(layout, inst.operands[0], "t1");
+                    const std::string src = operandReg(out, layout, inst.operands[1], "t0");
+                    out << "    neg " << rd << ", " << src << "\n";
+                    storeVReg(out, layout, inst.operands[0], rd.c_str());
+                    }
                     break;
                 case IROpcode::NOT:
                     if (inst.operands.size() != 2) break;
-                    loadOperand(out, layout, inst.operands[1], "t0");
-                    out << "    seqz t1, t0\n";
-                    storeVReg(out, layout, inst.operands[0], "t1");
+                    {
+                    const std::string rd = resultReg(layout, inst.operands[0], "t1");
+                    const std::string src = operandReg(out, layout, inst.operands[1], "t0");
+                    out << "    seqz " << rd << ", " << src << "\n";
+                    storeVReg(out, layout, inst.operands[0], rd.c_str());
+                    }
                     break;
                 case IROpcode::LOAD_LOCAL:
                     if (inst.operands.size() != 2) break;
@@ -422,21 +451,23 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                 case IROpcode::BNE:
                     if (inst.operands.size() != 3) break;
                     if (inst.operands[1].kind == OperandKind::Immediate && immValue(inst.operands[1]) == 0) {
-                        loadOperand(out, layout, inst.operands[0], "t0");
+                        const std::string lhs = operandReg(out, layout, inst.operands[0], "t0");
                         out << "    " << (inst.opcode == IROpcode::BEQ ? "beq" : "bne")
-                            << " t0, zero, " << labelName(fn.name, inst.operands[2]) << "\n";
+                            << " " << lhs << ", zero, " << labelName(fn.name, inst.operands[2]) << "\n";
                         break;
                     }
                     if (inst.operands[0].kind == OperandKind::Immediate && immValue(inst.operands[0]) == 0) {
-                        loadOperand(out, layout, inst.operands[1], "t1");
+                        const std::string rhs = operandReg(out, layout, inst.operands[1], "t1");
                         out << "    " << (inst.opcode == IROpcode::BEQ ? "beq" : "bne")
-                            << " zero, t1, " << labelName(fn.name, inst.operands[2]) << "\n";
+                            << " zero, " << rhs << ", " << labelName(fn.name, inst.operands[2]) << "\n";
                         break;
                     }
-                    loadOperand(out, layout, inst.operands[0], "t0");
-                    loadOperand(out, layout, inst.operands[1], "t1");
+                    {
+                    const std::string lhs = operandReg(out, layout, inst.operands[0], "t0");
+                    const std::string rhs = operandReg(out, layout, inst.operands[1], "t1");
                     out << "    " << (inst.opcode == IROpcode::BEQ ? "beq" : "bne")
-                        << " t0, t1, " << labelName(fn.name, inst.operands[2]) << "\n";
+                        << " " << lhs << ", " << rhs << ", " << labelName(fn.name, inst.operands[2]) << "\n";
+                    }
                     break;
                 case IROpcode::PARAM:
                     if (inst.operands.size() == 1) {
@@ -485,7 +516,7 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                     } else if (inst.operands[0].kind == OperandKind::Immediate) {
                         out << "    li a0, " << immValue(inst.operands[0]) << "\n";
                     } else if (inst.operands[0].kind == OperandKind::VirtualReg) {
-                        emitLoadSP(out, "a0", vregSlot(layout, regId(inst.operands[0])));
+                        loadOperand(out, layout, inst.operands[0], "a0");
                     }
                     out << "    j " << returnLabel << "\n";
                     break;
