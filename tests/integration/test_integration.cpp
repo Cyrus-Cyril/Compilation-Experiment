@@ -50,6 +50,17 @@ static bool contains(const std::string& text, const std::string& needle) {
     return text.find(needle) != std::string::npos;
 }
 
+static int countAsmToken(const std::string& text, const std::string& token) {
+    int count = 0;
+    size_t pos = 0;
+    const std::string needle = token + " ";
+    while ((pos = text.find(needle, pos)) != std::string::npos) {
+        ++count;
+        pos += needle.size();
+    }
+    return count;
+}
+
 static CompileResult compileSource(const std::string& source, bool optimize) {
     CompileResult result;
 
@@ -119,6 +130,11 @@ static void checkCaseSpecificAssembly(const std::string& caseName, const std::st
         check(contains(asmText, ".Lmain_"), prefix + " emits hot-loop labels");
         check(contains(asmText, "j .Lmain_"), prefix + " emits hot-loop back edge");
         check(contains(asmText, "s1") || contains(asmText, "s2"), prefix + " can use register cache");
+        if (optimize) {
+            int memoryLike = countAsmToken(asmText, "lw") + countAsmToken(asmText, "sw") +
+                             countAsmToken(asmText, "mv") + countAsmToken(asmText, "j");
+            check(memoryLike <= 12, prefix + " keeps optimized loop storage compact");
+        }
     }
 }
 

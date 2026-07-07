@@ -50,15 +50,73 @@ struct FunctionLayout {
     int vregCount = 0;
     int saveBase = 0;
     int raOffset = 12;
+    bool hasCall = false;
     std::unordered_map<int, std::string> localRegs;
     std::unordered_map<uint32_t, std::string> vregRegs;
     std::vector<std::string> savedRegs;
+};
+
+struct EmitState {
+    std::unordered_map<uint32_t, std::string> vregAliases;
+    std::unordered_map<uint32_t, int> remainingUses;
 };
 
 void scanOperand(const IROperand& operand, uint32_t& maxReg) {
     if (operand.kind == OperandKind::VirtualReg) {
         maxReg = std::max(maxReg, regId(operand));
     }
+}
+
+void countUse(const IROperand& operand, std::unordered_map<uint32_t, int>& uses) {
+    if (operand.kind == OperandKind::VirtualReg) {
+        ++uses[regId(operand)];
+    }
+}
+
+std::unordered_map<uint32_t, int> buildUseCounts(const IRFunction& fn) {
+    std::unordered_map<uint32_t, int> uses;
+    for (const auto& inst : fn.instructions) {
+        switch (inst.opcode) {
+            case IROpcode::ADD:
+            case IROpcode::SUB:
+            case IROpcode::MUL:
+            case IROpcode::DIV:
+            case IROpcode::MOD:
+            case IROpcode::EQ:
+            case IROpcode::NE:
+            case IROpcode::LT:
+            case IROpcode::GT:
+            case IROpcode::LE:
+            case IROpcode::GE:
+            case IROpcode::AND:
+            case IROpcode::OR:
+                if (inst.operands.size() >= 3) {
+                    countUse(inst.operands[1], uses);
+                    countUse(inst.operands[2], uses);
+                }
+                break;
+            case IROpcode::NEG:
+            case IROpcode::NOT:
+            case IROpcode::PARAM:
+            case IROpcode::RET:
+                if (!inst.operands.empty()) countUse(inst.operands[0], uses);
+                break;
+            case IROpcode::STORE_LOCAL:
+            case IROpcode::STORE_GLOBAL:
+                if (inst.operands.size() >= 2) countUse(inst.operands[1], uses);
+                break;
+            case IROpcode::BEQ:
+            case IROpcode::BNE:
+                if (inst.operands.size() >= 2) {
+                    countUse(inst.operands[0], uses);
+                    countUse(inst.operands[1], uses);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+    return uses;
 }
 
 template <typename K>
@@ -74,11 +132,15 @@ std::vector<std::pair<K, int>> sortedHotEntries(const std::unordered_map<K, int>
 FunctionLayout buildLayout(const IRFunction& fn) {
     uint32_t maxReg = 0;
     bool hasReg = false;
+    bool hasCall = false;
     int maxLocalEnd = 0;
     std::unordered_map<int, int> localHeat;
     std::unordered_map<uint32_t, int> vregHeat;
 
     for (const auto& inst : fn.instructions) {
+        if (inst.opcode == IROpcode::CALL) {
+            hasCall = true;
+        }
         for (const auto& operand : inst.operands) {
             if (operand.kind == OperandKind::VirtualReg) {
                 hasReg = true;
@@ -99,33 +161,40 @@ FunctionLayout buildLayout(const IRFunction& fn) {
     }
 
     FunctionLayout layout;
+    layout.hasCall = hasCall;
     layout.localSize = align16(maxLocalEnd);
     layout.vregBase = layout.localSize;
     layout.vregCount = hasReg ? static_cast<int>(maxReg + 1) : 0;
     int vregSize = layout.vregCount * 4;
 
-    std::vector<std::string> availableRegs = {
+    std::vector<std::string> savedAvailableRegs = {
         "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11"};
+    std::vector<std::string> localAvailableRegs = savedAvailableRegs;
+    if (!layout.hasCall) {
+        localAvailableRegs.push_back("t4");
+        localAvailableRegs.push_back("t5");
+        localAvailableRegs.push_back("t6");
+    }
     size_t nextSaved = 0;
     std::unordered_set<std::string> usedSaved;
 
     for (const auto& [offset, count] : sortedHotEntries(localHeat)) {
-        if (nextSaved >= availableRegs.size()) break;
+        if (nextSaved >= localAvailableRegs.size()) break;
         if (count < 2) continue;
-        const std::string& reg = availableRegs[nextSaved++];
+        const std::string& reg = localAvailableRegs[nextSaved++];
         layout.localRegs[offset] = reg;
-        usedSaved.insert(reg);
+        if (!reg.empty() && reg[0] == 's') usedSaved.insert(reg);
     }
 
     for (const auto& [id, count] : sortedHotEntries(vregHeat)) {
-        if (nextSaved >= availableRegs.size()) break;
+        if (nextSaved >= savedAvailableRegs.size()) break;
         if (count < 3) continue;
-        const std::string& reg = availableRegs[nextSaved++];
+        const std::string& reg = savedAvailableRegs[nextSaved++];
         layout.vregRegs[id] = reg;
         usedSaved.insert(reg);
     }
 
-    for (const auto& reg : availableRegs) {
+    for (const auto& reg : savedAvailableRegs) {
         if (usedSaved.count(reg)) layout.savedRegs.push_back(reg);
     }
 
@@ -165,6 +234,87 @@ std::string resultReg(const FunctionLayout& layout, const IROperand& operand, co
     return fallback;
 }
 
+void forgetAliasesUsing(EmitState& state, const std::string& physReg) {
+    for (auto it = state.vregAliases.begin(); it != state.vregAliases.end();) {
+        if (it->second == physReg) {
+            it = state.vregAliases.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+bool hasRemainingUse(const EmitState& state, uint32_t id) {
+    auto found = state.remainingUses.find(id);
+    return found != state.remainingUses.end() && found->second > 0;
+}
+
+bool hasRemainingUse(const EmitState& state, const IROperand& operand) {
+    return operand.kind == OperandKind::VirtualReg && hasRemainingUse(state, regId(operand));
+}
+
+void emitStoreSP(std::ostringstream& out, const char* rs, int offset);
+
+void spillAliasesUsing(std::ostringstream& out, const FunctionLayout& layout,
+                       EmitState& state, const std::string& physReg) {
+    std::vector<uint32_t> toErase;
+    for (const auto& [id, reg] : state.vregAliases) {
+        if (reg != physReg) continue;
+        if (hasRemainingUse(state, id)) {
+            emitStoreSP(out, physReg.c_str(), vregSlot(layout, id));
+        }
+        toErase.push_back(id);
+    }
+    for (uint32_t id : toErase) {
+        state.vregAliases.erase(id);
+    }
+}
+
+void forgetVReg(EmitState& state, const IROperand& operand) {
+    if (operand.kind == OperandKind::VirtualReg) {
+        state.vregAliases.erase(regId(operand));
+    }
+}
+
+void rememberAlias(EmitState& state, const IROperand& operand, const std::string& physReg) {
+    if (operand.kind == OperandKind::VirtualReg) {
+        state.vregAliases[regId(operand)] = physReg;
+    }
+}
+
+const std::string* aliasReg(const EmitState& state, const IROperand& operand) {
+    if (operand.kind != OperandKind::VirtualReg) return nullptr;
+    auto found = state.vregAliases.find(regId(operand));
+    return found == state.vregAliases.end() ? nullptr : &found->second;
+}
+
+void consumeUse(EmitState& state, const IROperand& operand) {
+    if (operand.kind != OperandKind::VirtualReg) return;
+    auto found = state.remainingUses.find(regId(operand));
+    if (found != state.remainingUses.end() && found->second > 0) {
+        --found->second;
+    }
+}
+
+bool isVolatilePhysReg(const std::string& reg) {
+    return !reg.empty() && (reg[0] == 'a' || reg[0] == 't');
+}
+
+void flushLiveVolatileAliases(std::ostringstream& out, const FunctionLayout& layout, EmitState& state) {
+    std::vector<uint32_t> toErase;
+    for (const auto& [id, reg] : state.vregAliases) {
+        if (!isVolatilePhysReg(reg)) continue;
+        auto found = state.remainingUses.find(id);
+        if (found != state.remainingUses.end() && found->second > 0) {
+            emitStoreSP(out, reg.c_str(), vregSlot(layout, id));
+        }
+        toErase.push_back(id);
+    }
+    for (uint32_t id : toErase) {
+        state.vregAliases.erase(id);
+    }
+}
+
 void emitLoadSP(std::ostringstream& out, const char* rd, int offset) {
     if (offset >= -2048 && offset <= 2047) {
         out << "    lw " << rd << ", " << offset << "(sp)\n";
@@ -194,42 +344,82 @@ void emitAdjustSP(std::ostringstream& out, int amount, bool isSub) {
     }
 }
 
-void loadOperand(std::ostringstream& out, const FunctionLayout& layout,
+void loadOperand(std::ostringstream& out, const FunctionLayout& layout, EmitState& state,
                  const IROperand& operand, const char* physReg) {
     if (operand.kind == OperandKind::Immediate) {
+        spillAliasesUsing(out, layout, state, physReg);
         out << "    li " << physReg << ", " << immValue(operand) << "\n";
     } else if (operand.kind == OperandKind::VirtualReg) {
+        if (const std::string* aliased = aliasReg(state, operand)) {
+            if (*aliased != physReg) {
+                spillAliasesUsing(out, layout, state, physReg);
+                out << "    mv " << physReg << ", " << *aliased << "\n";
+            }
+            return;
+        }
         if (const std::string* cached = vregReg(layout, regId(operand))) {
             if (*cached != physReg) {
+                spillAliasesUsing(out, layout, state, physReg);
                 out << "    mv " << physReg << ", " << *cached << "\n";
             }
             return;
         }
+        spillAliasesUsing(out, layout, state, physReg);
         emitLoadSP(out, physReg, vregSlot(layout, regId(operand)));
     }
 }
 
-std::string operandReg(std::ostringstream& out, const FunctionLayout& layout,
+std::string operandReg(std::ostringstream& out, const FunctionLayout& layout, EmitState& state,
                        const IROperand& operand, const char* scratchReg) {
     if (operand.kind == OperandKind::VirtualReg) {
+        if (const std::string* aliased = aliasReg(state, operand)) {
+            return *aliased;
+        }
         if (const std::string* cached = vregReg(layout, regId(operand))) {
             return *cached;
         }
     }
-    loadOperand(out, layout, operand, scratchReg);
+    loadOperand(out, layout, state, operand, scratchReg);
     return scratchReg;
 }
 
 void storeVReg(std::ostringstream& out, const FunctionLayout& layout,
-               const IROperand& operand, const char* physReg) {
+               EmitState& state, const IROperand& operand, const char* physReg) {
     if (operand.kind == OperandKind::VirtualReg) {
+        forgetVReg(state, operand);
         if (const std::string* cached = vregReg(layout, regId(operand))) {
             if (*cached != physReg) {
                 out << "    mv " << *cached << ", " << physReg << "\n";
             }
+            rememberAlias(state, operand, *cached);
             return;
         }
-        emitStoreSP(out, physReg, vregSlot(layout, regId(operand)));
+        rememberAlias(state, operand, physReg);
+    }
+}
+
+void aliasVReg(std::ostringstream& out, const FunctionLayout& layout, EmitState& state,
+               const IROperand& operand, const std::string& physReg) {
+    forgetVReg(state, operand);
+    if (operand.kind != OperandKind::VirtualReg) return;
+    if (const std::string* cached = vregReg(layout, regId(operand))) {
+        if (*cached != physReg) {
+            out << "    mv " << *cached << ", " << physReg << "\n";
+        }
+        rememberAlias(state, operand, *cached);
+    } else {
+        rememberAlias(state, operand, physReg);
+    }
+}
+
+void clearVolatileAliases(EmitState& state) {
+    for (auto it = state.vregAliases.begin(); it != state.vregAliases.end();) {
+        const std::string& reg = it->second;
+        if (!reg.empty() && (reg[0] == 'a' || reg[0] == 't')) {
+            it = state.vregAliases.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
@@ -279,6 +469,8 @@ std::string CodeGenerator::generate(const IRProgram& program) {
         FunctionLayout layout = buildLayout(codeFn);
         const std::string returnLabel = ".L" + fn.name + "_return";
         std::vector<IROperand> pendingParams;
+        EmitState state;
+        state.remainingUses = buildUseCounts(codeFn);
 
         out << fn.name << ":\n";
         emitAdjustSP(out, layout.frameSize, true);
@@ -286,15 +478,15 @@ std::string CodeGenerator::generate(const IRProgram& program) {
             emitStoreSP(out, layout.savedRegs[i].c_str(), layout.saveBase + static_cast<int>(i) * 4);
         }
         emitStoreSP(out, "ra", layout.raOffset);
-        for (int i = 0; i < layout.vregCount && i < 8; ++i) {
+        for (int i = 0; i < fn.paramCount && i < layout.vregCount && i < 8; ++i) {
             std::string reg = "a" + std::to_string(i);
-            storeVReg(out, layout, IROperand::reg(static_cast<uint32_t>(i)), reg.c_str());
+            aliasVReg(out, layout, state, IROperand::reg(static_cast<uint32_t>(i)), reg);
         }
         // 超过 8 个的参数从调用者栈帧中加载
         for (int i = 8; i < fn.paramCount && i < layout.vregCount; ++i) {
             int stackOffset = layout.frameSize + (i - 8) * 4;
             emitLoadSP(out, "t0", stackOffset);
-            storeVReg(out, layout, IROperand::reg(static_cast<uint32_t>(i)), "t0");
+            storeVReg(out, layout, state, IROperand::reg(static_cast<uint32_t>(i)), "t0");
         }
 
         for (const auto& inst : codeFn.instructions) {
@@ -319,40 +511,55 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                         inst.operands[1].kind != OperandKind::Immediate &&
                         inst.operands[2].kind == OperandKind::Immediate &&
                         fits12(immValue(inst.operands[2]))) {
-                        const std::string lhs = operandReg(out, layout, inst.operands[1], "t0");
+                        const std::string lhs = operandReg(out, layout, state, inst.operands[1], "t0");
+                        consumeUse(state, inst.operands[1]);
+                        consumeUse(state, inst.operands[2]);
+                        spillAliasesUsing(out, layout, state, rd);
                         out << "    addi " << rd << ", " << lhs << ", " << immValue(inst.operands[2]) << "\n";
-                        storeVReg(out, layout, inst.operands[0], rd.c_str());
+                        storeVReg(out, layout, state, inst.operands[0], rd.c_str());
                         break;
                     }
                     if (inst.opcode == IROpcode::ADD &&
                         inst.operands[1].kind == OperandKind::Immediate &&
                         inst.operands[2].kind != OperandKind::Immediate &&
                         fits12(immValue(inst.operands[1]))) {
-                        const std::string rhs = operandReg(out, layout, inst.operands[2], "t0");
+                        const std::string rhs = operandReg(out, layout, state, inst.operands[2], "t0");
+                        consumeUse(state, inst.operands[1]);
+                        consumeUse(state, inst.operands[2]);
+                        spillAliasesUsing(out, layout, state, rd);
                         out << "    addi " << rd << ", " << rhs << ", " << immValue(inst.operands[1]) << "\n";
-                        storeVReg(out, layout, inst.operands[0], rd.c_str());
+                        storeVReg(out, layout, state, inst.operands[0], rd.c_str());
                         break;
                     }
                     if (inst.opcode == IROpcode::SUB &&
                         inst.operands[1].kind != OperandKind::Immediate &&
                         inst.operands[2].kind == OperandKind::Immediate &&
                         fits12(-immValue(inst.operands[2]))) {
-                        const std::string lhs = operandReg(out, layout, inst.operands[1], "t0");
+                        const std::string lhs = operandReg(out, layout, state, inst.operands[1], "t0");
+                        consumeUse(state, inst.operands[1]);
+                        consumeUse(state, inst.operands[2]);
+                        spillAliasesUsing(out, layout, state, rd);
                         out << "    addi " << rd << ", " << lhs << ", " << -immValue(inst.operands[2]) << "\n";
-                        storeVReg(out, layout, inst.operands[0], rd.c_str());
+                        storeVReg(out, layout, state, inst.operands[0], rd.c_str());
                         break;
                     }
                     if (inst.opcode == IROpcode::LT &&
                         inst.operands[1].kind != OperandKind::Immediate &&
                         inst.operands[2].kind == OperandKind::Immediate &&
                         fits12(immValue(inst.operands[2]))) {
-                        const std::string lhs = operandReg(out, layout, inst.operands[1], "t0");
+                        const std::string lhs = operandReg(out, layout, state, inst.operands[1], "t0");
+                        consumeUse(state, inst.operands[1]);
+                        consumeUse(state, inst.operands[2]);
+                        spillAliasesUsing(out, layout, state, rd);
                         out << "    slti " << rd << ", " << lhs << ", " << immValue(inst.operands[2]) << "\n";
-                        storeVReg(out, layout, inst.operands[0], rd.c_str());
+                        storeVReg(out, layout, state, inst.operands[0], rd.c_str());
                         break;
                     }
-                    const std::string lhs = operandReg(out, layout, inst.operands[1], "t0");
-                    const std::string rhs = operandReg(out, layout, inst.operands[2], "t1");
+                    const std::string lhs = operandReg(out, layout, state, inst.operands[1], "t0");
+                    const std::string rhs = operandReg(out, layout, state, inst.operands[2], "t1");
+                    consumeUse(state, inst.operands[1]);
+                    consumeUse(state, inst.operands[2]);
+                    spillAliasesUsing(out, layout, state, rd);
                     switch (inst.opcode) {
                         case IROpcode::ADD: out << "    add " << rd << ", " << lhs << ", " << rhs << "\n"; break;
                         case IROpcode::SUB: out << "    sub " << rd << ", " << lhs << ", " << rhs << "\n"; break;
@@ -388,83 +595,115 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                             break;
                         default: break;
                     }
-                    storeVReg(out, layout, inst.operands[0], rd.c_str());
+                    storeVReg(out, layout, state, inst.operands[0], rd.c_str());
                     }
                     break;
                 case IROpcode::NEG:
                     if (inst.operands.size() != 2) break;
                     {
                     const std::string rd = resultReg(layout, inst.operands[0], "t1");
-                    const std::string src = operandReg(out, layout, inst.operands[1], "t0");
+                    const std::string src = operandReg(out, layout, state, inst.operands[1], "t0");
+                    consumeUse(state, inst.operands[1]);
+                    spillAliasesUsing(out, layout, state, rd);
                     out << "    neg " << rd << ", " << src << "\n";
-                    storeVReg(out, layout, inst.operands[0], rd.c_str());
+                    storeVReg(out, layout, state, inst.operands[0], rd.c_str());
                     }
                     break;
                 case IROpcode::NOT:
                     if (inst.operands.size() != 2) break;
                     {
                     const std::string rd = resultReg(layout, inst.operands[0], "t1");
-                    const std::string src = operandReg(out, layout, inst.operands[1], "t0");
+                    const std::string src = operandReg(out, layout, state, inst.operands[1], "t0");
+                    consumeUse(state, inst.operands[1]);
+                    spillAliasesUsing(out, layout, state, rd);
                     out << "    seqz " << rd << ", " << src << "\n";
-                    storeVReg(out, layout, inst.operands[0], rd.c_str());
+                    storeVReg(out, layout, state, inst.operands[0], rd.c_str());
                     }
                     break;
                 case IROpcode::LOAD_LOCAL:
                     if (inst.operands.size() != 2) break;
                     if (const std::string* cached = localReg(layout, localSlot(layout, immValue(inst.operands[1])))) {
-                        storeVReg(out, layout, inst.operands[0], cached->c_str());
+                        aliasVReg(out, layout, state, inst.operands[0], *cached);
                         break;
                     }
+                    spillAliasesUsing(out, layout, state, "t0");
                     emitLoadSP(out, "t0", localSlot(layout, immValue(inst.operands[1])));
-                    storeVReg(out, layout, inst.operands[0], "t0");
+                    storeVReg(out, layout, state, inst.operands[0], "t0");
                     break;
                 case IROpcode::STORE_LOCAL:
                     if (inst.operands.size() != 2) break;
                     if (const std::string* cached = localReg(layout, localSlot(layout, immValue(inst.operands[0])))) {
-                        loadOperand(out, layout, inst.operands[1], cached->c_str());
+                        loadOperand(out, layout, state, inst.operands[1], cached->c_str());
+                        consumeUse(state, inst.operands[1]);
+                        if (!hasRemainingUse(state, inst.operands[1])) {
+                            forgetVReg(state, inst.operands[1]);
+                        }
                         break;
                     }
-                    loadOperand(out, layout, inst.operands[1], "t0");
+                    loadOperand(out, layout, state, inst.operands[1], "t0");
+                    consumeUse(state, inst.operands[1]);
                     emitStoreSP(out, "t0", localSlot(layout, immValue(inst.operands[0])));
+                    if (!hasRemainingUse(state, inst.operands[1])) {
+                        forgetVReg(state, inst.operands[1]);
+                    }
                     break;
                 case IROpcode::LOAD_GLOBAL:
                     if (inst.operands.size() != 2) break;
+                    spillAliasesUsing(out, layout, state, "t0");
+                    spillAliasesUsing(out, layout, state, "t1");
                     out << "    la t0, " << stringValue(inst.operands[1]) << "\n";
                     out << "    lw t1, 0(t0)\n";
-                    storeVReg(out, layout, inst.operands[0], "t1");
+                    storeVReg(out, layout, state, inst.operands[0], "t1");
                     break;
                 case IROpcode::STORE_GLOBAL:
                     if (inst.operands.size() != 2) break;
-                    loadOperand(out, layout, inst.operands[1], "t0");
+                    loadOperand(out, layout, state, inst.operands[1], "t0");
+                    consumeUse(state, inst.operands[1]);
+                    spillAliasesUsing(out, layout, state, "t1");
                     out << "    la t1, " << stringValue(inst.operands[0]) << "\n";
                     out << "    sw t0, 0(t1)\n";
+                    if (!hasRemainingUse(state, inst.operands[1])) {
+                        forgetVReg(state, inst.operands[1]);
+                    }
                     break;
                 case IROpcode::LABEL:
                     if (inst.operands.size() != 1) break;
+                    flushLiveVolatileAliases(out, layout, state);
+                    state.vregAliases.clear();
                     out << labelName(fn.name, inst.operands[0]) << ":\n";
                     break;
                 case IROpcode::JMP:
                     if (inst.operands.size() != 1) break;
+                    flushLiveVolatileAliases(out, layout, state);
                     out << "    j " << labelName(fn.name, inst.operands[0]) << "\n";
                     break;
                 case IROpcode::BEQ:
                 case IROpcode::BNE:
                     if (inst.operands.size() != 3) break;
                     if (inst.operands[1].kind == OperandKind::Immediate && immValue(inst.operands[1]) == 0) {
-                        const std::string lhs = operandReg(out, layout, inst.operands[0], "t0");
+                        const std::string lhs = operandReg(out, layout, state, inst.operands[0], "t0");
+                        consumeUse(state, inst.operands[0]);
+                        consumeUse(state, inst.operands[1]);
+                        flushLiveVolatileAliases(out, layout, state);
                         out << "    " << (inst.opcode == IROpcode::BEQ ? "beq" : "bne")
                             << " " << lhs << ", zero, " << labelName(fn.name, inst.operands[2]) << "\n";
                         break;
                     }
                     if (inst.operands[0].kind == OperandKind::Immediate && immValue(inst.operands[0]) == 0) {
-                        const std::string rhs = operandReg(out, layout, inst.operands[1], "t1");
+                        const std::string rhs = operandReg(out, layout, state, inst.operands[1], "t1");
+                        consumeUse(state, inst.operands[0]);
+                        consumeUse(state, inst.operands[1]);
+                        flushLiveVolatileAliases(out, layout, state);
                         out << "    " << (inst.opcode == IROpcode::BEQ ? "beq" : "bne")
                             << " zero, " << rhs << ", " << labelName(fn.name, inst.operands[2]) << "\n";
                         break;
                     }
                     {
-                    const std::string lhs = operandReg(out, layout, inst.operands[0], "t0");
-                    const std::string rhs = operandReg(out, layout, inst.operands[1], "t1");
+                    const std::string lhs = operandReg(out, layout, state, inst.operands[0], "t0");
+                    const std::string rhs = operandReg(out, layout, state, inst.operands[1], "t1");
+                    consumeUse(state, inst.operands[0]);
+                    consumeUse(state, inst.operands[1]);
+                    flushLiveVolatileAliases(out, layout, state);
                     out << "    " << (inst.opcode == IROpcode::BEQ ? "beq" : "bne")
                         << " " << lhs << ", " << rhs << ", " << labelName(fn.name, inst.operands[2]) << "\n";
                     }
@@ -472,6 +711,7 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                 case IROpcode::PARAM:
                     if (inst.operands.size() == 1) {
                         pendingParams.push_back(inst.operands[0]);
+                        consumeUse(state, inst.operands[0]);
                     }
                     break;
                 case IROpcode::CALL:
@@ -479,7 +719,7 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                     // 先将前 8 个参数加载到 a0-a7（此时 sp 未调整，vreg 偏移量正确）
                     for (size_t i = 0; i < pendingParams.size() && i < 8; ++i) {
                         std::string argReg = "a" + std::to_string(i);
-                        loadOperand(out, layout, pendingParams[i], argReg.c_str());
+                        loadOperand(out, layout, state, pendingParams[i], argReg.c_str());
                     }
                     // 处理超过 8 个的参数：通过栈传递
                     if (pendingParams.size() > 8) {
@@ -489,11 +729,19 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                         for (size_t i = 8; i < pendingParams.size(); ++i) {
                             int storeOffset = static_cast<int>(i - 8) * 4;
                             if (pendingParams[i].kind == OperandKind::Immediate) {
+                                spillAliasesUsing(out, layout, state, "t0");
                                 out << "    li t0, " << immValue(pendingParams[i]) << "\n";
                             } else if (pendingParams[i].kind == OperandKind::VirtualReg) {
-                                if (const std::string* cached = vregReg(layout, regId(pendingParams[i]))) {
+                                if (const std::string* aliased = aliasReg(state, pendingParams[i])) {
+                                    if (*aliased != "t0") {
+                                        spillAliasesUsing(out, layout, state, "t0");
+                                        out << "    mv t0, " << *aliased << "\n";
+                                    }
+                                } else if (const std::string* cached = vregReg(layout, regId(pendingParams[i]))) {
+                                    spillAliasesUsing(out, layout, state, "t0");
                                     out << "    mv t0, " << *cached << "\n";
                                 } else {
+                                    spillAliasesUsing(out, layout, state, "t0");
                                     int vregAdjOffset = vregSlot(layout, regId(pendingParams[i])) + stackArgSize;
                                     emitLoadSP(out, "t0", vregAdjOffset);
                                 }
@@ -501,13 +749,15 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                             emitStoreSP(out, "t0", storeOffset);
                         }
                     }
+                    flushLiveVolatileAliases(out, layout, state);
                     out << "    call " << stringValue(inst.operands[1]) << "\n";
                     // 恢复栈指针
                     if (pendingParams.size() > 8) {
                         int stackArgSize = static_cast<int>(pendingParams.size() - 8) * 4;
                         emitAdjustSP(out, stackArgSize, false);
                     }
-                    storeVReg(out, layout, inst.operands[0], "a0");
+                    clearVolatileAliases(state);
+                    storeVReg(out, layout, state, inst.operands[0], "a0");
                     pendingParams.clear();
                     break;
                 case IROpcode::RET:
@@ -516,7 +766,8 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                     } else if (inst.operands[0].kind == OperandKind::Immediate) {
                         out << "    li a0, " << immValue(inst.operands[0]) << "\n";
                     } else if (inst.operands[0].kind == OperandKind::VirtualReg) {
-                        loadOperand(out, layout, inst.operands[0], "a0");
+                        loadOperand(out, layout, state, inst.operands[0], "a0");
+                        consumeUse(state, inst.operands[0]);
                     }
                     out << "    j " << returnLabel << "\n";
                     break;

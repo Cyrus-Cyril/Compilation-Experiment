@@ -346,10 +346,12 @@ std::vector<IRInstruction> propagateCopiesAndCse(std::vector<IRInstruction> inst
 
     std::unordered_map<uint32_t, IROperand> copies;
     std::unordered_map<std::string, uint32_t> expressions;
+    std::unordered_map<int32_t, uint32_t> localLoads;
 
     auto clearBlockState = [&]() {
         copies.clear();
         expressions.clear();
+        localLoads.clear();
     };
 
     for (auto inst : insts) {
@@ -365,7 +367,19 @@ std::vector<IRInstruction> propagateCopiesAndCse(std::vector<IRInstruction> inst
             eraseCopyAliases(copies, *dest);
         }
 
-        if (isPureValueOp(inst.opcode)) {
+        if (inst.opcode == IROpcode::LOAD_LOCAL && inst.operands.size() == 2 &&
+            inst.operands[1].kind == OperandKind::Immediate) {
+            int32_t offset = immValue(inst.operands[1]);
+            if (auto found = localLoads.find(offset); found != localLoads.end()) {
+                if (auto dest = destReg(inst)) {
+                    IROperand source = resolveCopy(IROperand::reg(found->second), copies);
+                    inst = {IROpcode::ADD, {IROperand::reg(*dest), source, IROperand::imm(0)}};
+                    copies[*dest] = source;
+                }
+            } else if (auto dest = destReg(inst)) {
+                localLoads[offset] = *dest;
+            }
+        } else if (isPureValueOp(inst.opcode)) {
             const std::string key = expressionKey(inst);
             if (auto found = expressions.find(key); found != expressions.end()) {
                 IROperand source = resolveCopy(IROperand::reg(found->second), copies);
@@ -387,9 +401,12 @@ std::vector<IRInstruction> propagateCopiesAndCse(std::vector<IRInstruction> inst
             }
         }
 
-        if (inst.opcode == IROpcode::STORE_LOCAL || inst.opcode == IROpcode::STORE_GLOBAL ||
-            inst.opcode == IROpcode::LOAD_LOCAL || inst.opcode == IROpcode::LOAD_GLOBAL ||
-            inst.opcode == IROpcode::CALL) {
+        if (inst.opcode == IROpcode::STORE_LOCAL && !inst.operands.empty() &&
+            inst.operands[0].kind == OperandKind::Immediate) {
+            localLoads.erase(immValue(inst.operands[0]));
+            expressions.clear();
+        } else if (inst.opcode == IROpcode::STORE_LOCAL || inst.opcode == IROpcode::STORE_GLOBAL ||
+                   inst.opcode == IROpcode::LOAD_GLOBAL || inst.opcode == IROpcode::CALL) {
             expressions.clear();
         }
 
@@ -573,6 +590,36 @@ std::vector<IRInstruction> rewriteJumpChains(std::vector<IRInstruction> insts) {
     return removeFallthroughJumps(std::move(insts));
 }
 
+IROpcode invertedBranch(IROpcode op) {
+    return op == IROpcode::BEQ ? IROpcode::BNE : IROpcode::BEQ;
+}
+
+std::vector<IRInstruction> invertBranchOverJump(std::vector<IRInstruction> insts) {
+    std::vector<IRInstruction> result;
+    result.reserve(insts.size());
+
+    for (size_t i = 0; i < insts.size(); ++i) {
+        if ((insts[i].opcode == IROpcode::BEQ || insts[i].opcode == IROpcode::BNE) &&
+            insts[i].operands.size() == 3 &&
+            i + 2 < insts.size() &&
+            insts[i + 1].opcode == IROpcode::JMP &&
+            insts[i + 1].operands.size() == 1 &&
+            insts[i + 2].opcode == IROpcode::LABEL &&
+            insts[i + 2].operands.size() == 1 &&
+            labelId(insts[i].operands[2]) == labelId(insts[i + 2].operands[0])) {
+            IRInstruction branch = insts[i];
+            branch.opcode = invertedBranch(branch.opcode);
+            branch.operands[2] = insts[i + 1].operands[0];
+            result.push_back(std::move(branch));
+            ++i;
+            continue;
+        }
+        result.push_back(std::move(insts[i]));
+    }
+
+    return result;
+}
+
 }  // namespace
 
 IRProgram Optimizer::optimize(const IRProgram& input) {
@@ -680,10 +727,12 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
             size_t before = fn.instructions.size();
             fn.instructions = propagateCopiesAndCse(std::move(fn.instructions));
             fn.instructions = removeDeadValueInsts(fn.instructions);
+            fn.instructions = invertBranchOverJump(std::move(fn.instructions));
             fn.instructions = rewriteJumpChains(std::move(fn.instructions));
             if (fn.instructions.size() == before) break;
         }
         fn.instructions = rewriteTailRecursion(fn);
+        fn.instructions = invertBranchOverJump(std::move(fn.instructions));
         fn.instructions = rewriteJumpChains(std::move(fn.instructions));
     }
 
