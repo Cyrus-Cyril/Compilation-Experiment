@@ -509,8 +509,12 @@ std::string CodeGenerator::generate(const IRProgram& program) {
         // 超过 8 个的参数从调用者栈帧中加载
         for (int i = 8; i < fn.paramCount && i < layout.vregCount; ++i) {
             int stackOffset = layout.frameSize + (i - 8) * 4;
+            forgetAliasesUsing(state, "t0");
             emitLoadSP(out, "t0", stackOffset);
             storeVReg(out, layout, state, IROperand::reg(static_cast<uint32_t>(i)), "t0");
+            if (!vregReg(layout, static_cast<uint32_t>(i))) {
+                state.vregAliases.erase(static_cast<uint32_t>(i));
+            }
         }
 
         for (size_t instIndex = 0; instIndex < codeFn.instructions.size(); ++instIndex) {
@@ -766,25 +770,23 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                     }
                     // 处理超过 8 个的参数：通过栈传递
                     if (pendingParams.size() > 8) {
+                        flushLiveVolatileAliases(out, layout, state);
                         int stackArgSize = static_cast<int>(pendingParams.size() - 8) * 4;
                         emitAdjustSP(out, stackArgSize, true);
                         // 此时 sp 已调整，vreg 实际位置在 sp + vregSlot + stackArgSize
                         for (size_t i = 8; i < pendingParams.size(); ++i) {
                             int storeOffset = static_cast<int>(i - 8) * 4;
+                            forgetAliasesUsing(state, "t0");
                             if (pendingParams[i].kind == OperandKind::Immediate) {
-                                spillAliasesUsing(out, layout, state, "t0");
                                 out << "    li t0, " << immValue(pendingParams[i]) << "\n";
                             } else if (pendingParams[i].kind == OperandKind::VirtualReg) {
                                 if (const std::string* aliased = aliasReg(state, pendingParams[i])) {
                                     if (*aliased != "t0") {
-                                        spillAliasesUsing(out, layout, state, "t0");
                                         out << "    mv t0, " << *aliased << "\n";
                                     }
                                 } else if (const std::string* cached = vregReg(layout, regId(pendingParams[i]))) {
-                                    spillAliasesUsing(out, layout, state, "t0");
                                     out << "    mv t0, " << *cached << "\n";
                                 } else {
-                                    spillAliasesUsing(out, layout, state, "t0");
                                     int vregAdjOffset = vregSlot(layout, regId(pendingParams[i])) + stackArgSize;
                                     emitLoadSP(out, "t0", vregAdjOffset);
                                 }
@@ -792,8 +794,9 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                             emitStoreSP(out, "t0", storeOffset);
                             consumeUse(state, pendingParams[i]);
                         }
+                    } else {
+                        flushLiveVolatileAliases(out, layout, state);
                     }
-                    flushLiveVolatileAliases(out, layout, state);
                     out << "    call " << stringValue(inst.operands[1]) << "\n";
                     // 恢复栈指针
                     if (pendingParams.size() > 8) {

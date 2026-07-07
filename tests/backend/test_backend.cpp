@@ -23,6 +23,10 @@ static bool contains(const std::string& text, const char* needle) {
     return text.find(needle) != std::string::npos;
 }
 
+static bool notContains(const std::string& text, const char* needle) {
+    return text.find(needle) == std::string::npos;
+}
+
 static bool appearsBefore(const std::string& text, const char* lhs, const char* rhs) {
     size_t lhsPos = text.find(lhs);
     size_t rhsPos = text.find(rhs);
@@ -208,6 +212,47 @@ static void test_recursive_call_shape() {
     check(contains(asmText, "call fact"), "emits recursive call");
 }
 
+static void test_many_stack_arguments() {
+    std::printf("\n-- Many Stack Arguments --\n");
+
+    IRProgram program;
+
+    IRFunction sum10Fn;
+    sum10Fn.name = "sum10";
+    sum10Fn.paramCount = 10;
+    for (int i = 0; i < 10; ++i) {
+        sum10Fn.instructions.push_back(
+            {IROpcode::STORE_LOCAL, {IROperand::imm(i * 4), IROperand::reg(static_cast<uint32_t>(i))}});
+    }
+    sum10Fn.instructions.push_back(
+        {IROpcode::LOAD_LOCAL, {IROperand::reg(10), IROperand::imm(32)}});
+    sum10Fn.instructions.push_back(
+        {IROpcode::LOAD_LOCAL, {IROperand::reg(11), IROperand::imm(36)}});
+    sum10Fn.instructions.push_back(
+        {IROpcode::SUB, {IROperand::reg(12), IROperand::reg(11), IROperand::reg(10)}});
+    sum10Fn.instructions.push_back({IROpcode::RET, {IROperand::reg(12)}});
+    program.functions.push_back(std::move(sum10Fn));
+
+    IRFunction mainFn;
+    mainFn.name = "main";
+    for (int i = 0; i < 10; ++i) {
+        mainFn.instructions.push_back({IROpcode::PARAM, {IROperand::imm(i)}});
+    }
+    mainFn.instructions.push_back({IROpcode::CALL, {IROperand::reg(0), IROperand::func("sum10")}});
+    mainFn.instructions.push_back({IROpcode::RET, {IROperand::reg(0)}});
+    program.functions.push_back(std::move(mainFn));
+
+    CodeGenerator gen;
+    std::string asmText = gen.generate(program);
+
+    check(contains(asmText, "sum10:"), "emits ten-argument callee");
+    check(contains(asmText, "lw t0,") && contains(asmText, "sw t0,"), "imports stack arguments");
+    check(contains(asmText, "li t0, 8") && contains(asmText, "li t0, 9"),
+          "passes ninth and tenth arguments on caller stack");
+    check(notContains(asmText, "mv s9, t0\n    mv s10, t0"),
+          "does not alias multiple stack parameters to the same scratch register");
+}
+
 static void test_cached_return_value() {
     std::printf("\n-- Cached Return Value --\n");
 
@@ -237,6 +282,7 @@ int main() {
     test_globals_and_control_flow();
     test_function_calls();
     test_recursive_call_shape();
+    test_many_stack_arguments();
     test_cached_return_value();
 
     std::printf("\n==============================\n");
