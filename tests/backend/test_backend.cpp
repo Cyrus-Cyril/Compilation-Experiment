@@ -80,9 +80,8 @@ static void test_expressions_and_locals() {
     std::string asmText = gen.generate(program);
 
     check(contains(asmText, "mul t2, t0, t1"), "emits multiplication");
-    check(contains(asmText, "sw t0, 0(sp)"), "stores local variable");
-    check(contains(asmText, "lw t0, 0(sp)"), "loads local variable");
-    check(contains(asmText, "slt t2, t0, t1"), "emits less-than comparison");
+    check(contains(asmText, "s1") || contains(asmText, "s2"), "uses saved-register cache");
+    check(contains(asmText, "slti t2,") || contains(asmText, "slt t2,"), "emits less-than comparison");
     check(contains(asmText, "seqz t1, t0"), "emits logical not");
     check(contains(asmText, "neg t1, t0"), "emits unary negation");
 }
@@ -119,7 +118,8 @@ static void test_globals_and_control_flow() {
     check(contains(asmText, "lw t1, 0(t0)"), "loads global value");
     check(contains(asmText, "la t1, g"), "loads global address for store");
     check(contains(asmText, "sw t0, 0(t1)"), "stores global value");
-    check(contains(asmText, "bne t0, t1, .Lmain_1"), "emits conditional branch");
+    check(contains(asmText, "bne t0, zero, .Lmain_1") ||
+          contains(asmText, "bne t0, t1, .Lmain_1"), "emits conditional branch");
     check(contains(asmText, "j .Lmain_2"), "emits jump");
     check(contains(asmText, ".Lmain_1:"), "emits first label");
     check(contains(asmText, ".Lmain_2:"), "emits second label");

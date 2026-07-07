@@ -69,11 +69,60 @@ static void test_unreachable_after_return() {
     check(insts[2].opcode == IROpcode::RET, "keeps code after label");
 }
 
+static void test_algebraic_simplification() {
+    std::printf("\n-- Algebraic Simplification --\n");
+
+    IRProgram program;
+    IRFunction fn;
+    fn.name = "main";
+    fn.instructions.push_back(
+        {IROpcode::LOAD_LOCAL, {IROperand::reg(0), IROperand::imm(0)}});
+    fn.instructions.push_back(
+        {IROpcode::MUL, {IROperand::reg(1), IROperand::reg(0), IROperand::imm(1)}});
+    fn.instructions.push_back(
+        {IROpcode::ADD, {IROperand::reg(2), IROperand::reg(1), IROperand::imm(0)}});
+    fn.instructions.push_back({IROpcode::RET, {IROperand::reg(2)}});
+    program.functions.push_back(std::move(fn));
+
+    IRProgram optimized = Optimizer{}.optimize(program);
+    const auto& insts = optimized.functions[0].instructions;
+
+    check(insts[1].opcode == IROpcode::ADD, "rewrites multiply-by-one to add-copy");
+    check(insts[1].operands[1].kind == OperandKind::VirtualReg, "copy keeps source register");
+    check(insts[1].operands[2].kind == OperandKind::Immediate, "copy uses zero immediate");
+    check(immAt(insts[1], 2) == 0, "copy immediate is zero");
+    check(insts[2].opcode == IROpcode::ADD, "keeps add-zero as copy form");
+}
+
+static void test_constant_branch_and_jump_cleanup() {
+    std::printf("\n-- Branch Folding And Jump Cleanup --\n");
+
+    IRProgram program;
+    IRFunction fn;
+    fn.name = "main";
+    fn.instructions.push_back(
+        {IROpcode::BEQ, {IROperand::imm(1), IROperand::imm(1), IROperand::label(1)}});
+    fn.instructions.push_back({IROpcode::LABEL, {IROperand::label(1)}});
+    fn.instructions.push_back(
+        {IROpcode::BNE, {IROperand::imm(2), IROperand::imm(2), IROperand::label(2)}});
+    fn.instructions.push_back({IROpcode::RET, {IROperand::imm(0)}});
+    program.functions.push_back(std::move(fn));
+
+    IRProgram optimized = Optimizer{}.optimize(program);
+    const auto& insts = optimized.functions[0].instructions;
+
+    check(insts.size() == 2, "removes jump to immediately following label and false branch");
+    check(insts[0].opcode == IROpcode::LABEL, "keeps target label");
+    check(insts[1].opcode == IROpcode::RET, "keeps return after folded branches");
+}
+
 int main() {
     std::printf("=== ToyC Optimizer Unit Tests ===\n\n");
 
     test_constant_folding();
     test_unreachable_after_return();
+    test_algebraic_simplification();
+    test_constant_branch_and_jump_cleanup();
 
     std::printf("\n==============================\n");
     std::printf("  %d / %d tests passed\n", pass_count, test_count);

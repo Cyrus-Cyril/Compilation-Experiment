@@ -88,7 +88,11 @@ static void checkCaseSpecificAssembly(const std::string& caseName, const std::st
     const std::string prefix = caseName + (optimize ? " [opt]" : " [base]");
 
     if (caseName == "arithmetic_ret7") {
-        check(contains(asmText, "mul "), prefix + " keeps arithmetic multiply path");
+        if (optimize) {
+            check(!contains(asmText, "mul "), prefix + " folds constant arithmetic");
+        } else {
+            check(contains(asmText, "mul "), prefix + " keeps arithmetic multiply path");
+        }
     } else if (caseName == "function_call_ret9") {
         check(contains(asmText, "call add"), prefix + " emits call to add");
     } else if (caseName == "globals_ret42") {
@@ -98,7 +102,8 @@ static void checkCaseSpecificAssembly(const std::string& caseName, const std::st
         check(contains(asmText, ".Lmain_"), prefix + " emits branch labels");
     } else if (caseName == "locals_ret9") {
         check(contains(asmText, "sw t0, 0(sp)") || contains(asmText, "sw t0, 4(sp)") ||
-              contains(asmText, "sw t0, 8(sp)"), prefix + " stores locals on stack");
+              contains(asmText, "sw t0, 8(sp)") || contains(asmText, "s1") ||
+              contains(asmText, "s2"), prefix + " materializes local storage");
     } else if (caseName == "recursion_ret120") {
         check(contains(asmText, "call fact"), prefix + " emits recursive call");
     } else if (caseName == "return_const_ret42") {
@@ -110,6 +115,10 @@ static void checkCaseSpecificAssembly(const std::string& caseName, const std::st
     } else if (caseName == "while_break_continue_ret25") {
         check(contains(asmText, ".Lmain_"), prefix + " emits loop labels");
         check(contains(asmText, "j .Lmain_"), prefix + " emits loop jumps");
+    } else if (caseName == "loop_heavy_ret100") {
+        check(contains(asmText, ".Lmain_"), prefix + " emits hot-loop labels");
+        check(contains(asmText, "j .Lmain_"), prefix + " emits hot-loop back edge");
+        check(contains(asmText, "s1") || contains(asmText, "s2"), prefix + " can use register cache");
     }
 }
 
