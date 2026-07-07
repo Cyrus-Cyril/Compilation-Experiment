@@ -195,6 +195,22 @@ static void test_return_check() {
             "void f(int a) { int x__ = a; } int main() { return 0; }", a);
         check(ok && a.errors().empty(), "void function without return passes");
     }
+
+    // 正确：常量真分支保证返回
+    {
+        SemanticAnalyzer a;
+        auto [ok, ast] = parseAndAnalyze(
+            "int main() { if (1) { return 1; } }", a);
+        check(ok && a.errors().empty(), "constant true if return path passes");
+    }
+
+    // 正确：顺序扫描中前序 return 后的语句不影响返回路径
+    {
+        SemanticAnalyzer a;
+        auto [ok, ast] = parseAndAnalyze(
+            "int main() { return 1; int x = 2; }", a);
+        check(ok && a.errors().empty(), "early return satisfies return path");
+    }
 }
 
 // ============================================================
@@ -290,6 +306,38 @@ static void test_function_call() {
         auto [ok, ast] = parseAndAnalyze(
             "int f(int a) { return a; }\nvoid g() { return; }\nint main() { return f(g()); }", a);
         check(!ok || !a.errors().empty(), "void arg to int param detected");
+    }
+
+    // 正确：函数可在调用点之后定义
+    {
+        SemanticAnalyzer a;
+        auto [ok, ast] = parseAndAnalyze(
+            "int main() { return f(); }\nint f() { return 42; }", a);
+        check(ok && a.errors().empty(), "forward function call passes");
+    }
+
+    // 正确：局部变量可以遮蔽同名函数，裸名解析为变量
+    {
+        SemanticAnalyzer a;
+        auto [ok, ast] = parseAndAnalyze(
+            "int f() { int f = 42; return f; }\nint main() { return f(); }", a);
+        check(ok && a.errors().empty(), "local variable shadows function name expression");
+    }
+
+    // 正确：参数可以遮蔽同名函数，裸名解析为参数
+    {
+        SemanticAnalyzer a;
+        auto [ok, ast] = parseAndAnalyze(
+            "int f(int f) { return f; }\nint main() { return f(42); }", a);
+        check(ok && a.errors().empty(), "parameter shadows function name expression");
+    }
+
+    // 错误：裸函数名不能作为表达式使用
+    {
+        SemanticAnalyzer a;
+        auto [ok, ast] = parseAndAnalyze(
+            "int f() { return 1; }\nint main() { return f; }", a);
+        check(!ok || !a.errors().empty(), "bare function name rejected");
     }
 }
 

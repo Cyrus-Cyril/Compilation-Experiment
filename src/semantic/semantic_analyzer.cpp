@@ -24,6 +24,12 @@ bool SemanticAnalyzer::analyze(CompUnit* ast) {
     symTable_.enterScope();  // 全局作用域
 
     for (const auto& elem : ast->elements) {
+        if (elem->kind() == NodeKind::FuncDef) {
+            declareFuncSignature(static_cast<FuncDef*>(elem.get()));
+        }
+    }
+
+    for (const auto& elem : ast->elements) {
         switch (elem->kind()) {
             case NodeKind::VarDecl:
                 visitVarDecl(static_cast<VarDecl*>(elem.get()));
@@ -76,7 +82,7 @@ void SemanticAnalyzer::error(const SourceLocation& loc, const std::string& msg) 
 // 函数定义处理
 // ============================================================
 
-void SemanticAnalyzer::visitFuncDef(void* func) {
+void SemanticAnalyzer::declareFuncSignature(void* func) {
     auto* f = static_cast<FuncDef*>(func);
 
     if (symTable_.lookupCurrentScope(f->name)) {
@@ -93,9 +99,18 @@ void SemanticAnalyzer::visitFuncDef(void* func) {
         funcSym.paramTypes.push_back(Type::INT);
     }
     symTable_.insert(funcSym);
+}
+
+void SemanticAnalyzer::visitFuncDef(void* func) {
+    auto* f = static_cast<FuncDef*>(func);
+    Symbol* funcSym = symTable_.lookupGlobalScope(f->name);
+    if (!funcSym || funcSym->kind != SymbolKind::Function || funcSym->declLoc.line != f->loc.line ||
+        funcSym->declLoc.column != f->loc.column) {
+        return;
+    }
 
     symTable_.enterScope();
-    symTable_.setCurrentFunction(symTable_.lookup(f->name));
+    symTable_.setCurrentFunction(funcSym);
 
     for (size_t i = 0; i < f->params.size(); ++i) {
         Param* p = f->params[i].get();
@@ -389,8 +404,15 @@ bool SemanticAnalyzer::checkStmtReturns(void* stmt) {
         case NodeKind::BlockStmt:
             return checkReturnOnAllPaths(static_cast<BlockStmt*>(s));
 
-        case NodeKind::IfStmt:
+        case NodeKind::IfStmt: {
+            auto* i = static_cast<IfStmt*>(s);
+            auto condVal = evalConstExpr(i->condition.get());
+            if (condVal.has_value()) {
+                return condVal.value() != 0 ? checkStmtReturns(i->thenStmt.get())
+                                            : (i->elseStmt && checkStmtReturns(i->elseStmt.get()));
+            }
             return checkIfReturnsOnAllPaths(s);
+        }
 
         case NodeKind::WhileStmt: {
             auto* w = static_cast<WhileStmt*>(s);
@@ -410,10 +432,10 @@ bool SemanticAnalyzer::checkStmtReturns(void* stmt) {
 
 bool SemanticAnalyzer::checkReturnOnAllPaths(void* block) {
     auto* b = static_cast<BlockStmt*>(block);
-    if (b->stmts.empty()) return false;
-
-    ASTNode* last = b->stmts.back().get();
-    return checkStmtReturns(last);
+    for (const auto& stmt : b->stmts) {
+        if (checkStmtReturns(stmt.get())) return true;
+    }
+    return false;
 }
 
 bool SemanticAnalyzer::checkIfReturnsOnAllPaths(void* ifStmt) {

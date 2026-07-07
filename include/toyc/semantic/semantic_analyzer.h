@@ -35,6 +35,7 @@ private:
     void error(const SourceLocation& loc, const std::string& msg);
 
     // ---- 声明访问 ----
+    void declareFuncSignature(void* func);
     void visitDecl(void* node);
     void visitVarDecl(void* decl);
     void visitConstDecl(void* decl);
