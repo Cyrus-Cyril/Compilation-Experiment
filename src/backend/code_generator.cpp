@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <sstream>
 #include <string>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
@@ -59,6 +60,7 @@ struct FunctionLayout {
 
 struct EmitState {
     std::unordered_map<uint32_t, std::string> vregAliases;
+    std::unordered_map<uint32_t, int> localAliases;
     std::unordered_map<uint32_t, int> remainingUses;
 };
 
@@ -98,6 +100,8 @@ std::unordered_map<uint32_t, int> buildUseCounts(const IRFunction& fn) {
                 break;
             case IROpcode::NEG:
             case IROpcode::NOT:
+                if (inst.operands.size() >= 2) countUse(inst.operands[1], uses);
+                break;
             case IROpcode::PARAM:
             case IROpcode::RET:
                 if (!inst.operands.empty()) countUse(inst.operands[0], uses);
@@ -252,6 +256,7 @@ std::string resultReg(const FunctionLayout& layout, const IROperand& operand, co
 void forgetAliasesUsing(EmitState& state, const std::string& physReg) {
     for (auto it = state.vregAliases.begin(); it != state.vregAliases.end();) {
         if (it->second == physReg) {
+            state.localAliases.erase(it->first);
             it = state.vregAliases.erase(it);
         } else {
             ++it;
@@ -282,12 +287,15 @@ void spillAliasesUsing(std::ostringstream& out, const FunctionLayout& layout,
     }
     for (uint32_t id : toErase) {
         state.vregAliases.erase(id);
+        state.localAliases.erase(id);
     }
 }
 
 void forgetVReg(EmitState& state, const IROperand& operand) {
     if (operand.kind == OperandKind::VirtualReg) {
-        state.vregAliases.erase(regId(operand));
+        uint32_t id = regId(operand);
+        state.vregAliases.erase(id);
+        state.localAliases.erase(id);
     }
 }
 
@@ -297,10 +305,23 @@ void rememberAlias(EmitState& state, const IROperand& operand, const std::string
     }
 }
 
+void rememberLocalAlias(EmitState& state, const IROperand& operand, int offset) {
+    if (operand.kind == OperandKind::VirtualReg) {
+        state.localAliases[regId(operand)] = offset;
+    }
+}
+
 const std::string* aliasReg(const EmitState& state, const IROperand& operand) {
     if (operand.kind != OperandKind::VirtualReg) return nullptr;
     auto found = state.vregAliases.find(regId(operand));
     return found == state.vregAliases.end() ? nullptr : &found->second;
+}
+
+std::optional<int> localAliasOffset(const EmitState& state, const IROperand& operand) {
+    if (operand.kind != OperandKind::VirtualReg) return std::nullopt;
+    auto found = state.localAliases.find(regId(operand));
+    if (found == state.localAliases.end()) return std::nullopt;
+    return found->second;
 }
 
 void consumeUse(EmitState& state, const IROperand& operand) {
@@ -388,6 +409,89 @@ bool instructionUsesVReg(const IRInstruction& inst, uint32_t id) {
     }
 }
 
+std::optional<uint32_t> definedVReg(const IRInstruction& inst) {
+    switch (inst.opcode) {
+        case IROpcode::ADD:
+        case IROpcode::SUB:
+        case IROpcode::MUL:
+        case IROpcode::DIV:
+        case IROpcode::MOD:
+        case IROpcode::NEG:
+        case IROpcode::EQ:
+        case IROpcode::NE:
+        case IROpcode::LT:
+        case IROpcode::GT:
+        case IROpcode::LE:
+        case IROpcode::GE:
+        case IROpcode::AND:
+        case IROpcode::OR:
+        case IROpcode::NOT:
+        case IROpcode::LOAD_LOCAL:
+        case IROpcode::LOAD_GLOBAL:
+        case IROpcode::CALL:
+            if (!inst.operands.empty() && inst.operands[0].kind == OperandKind::VirtualReg) {
+                return regId(inst.operands[0]);
+            }
+            return std::nullopt;
+        default:
+            return std::nullopt;
+    }
+}
+
+bool isSkippableDeadValue(const IRInstruction& inst) {
+    switch (inst.opcode) {
+        case IROpcode::ADD:
+        case IROpcode::SUB:
+        case IROpcode::MUL:
+        case IROpcode::DIV:
+        case IROpcode::MOD:
+        case IROpcode::NEG:
+        case IROpcode::EQ:
+        case IROpcode::NE:
+        case IROpcode::LT:
+        case IROpcode::GT:
+        case IROpcode::LE:
+        case IROpcode::GE:
+        case IROpcode::AND:
+        case IROpcode::OR:
+        case IROpcode::NOT:
+        case IROpcode::LOAD_LOCAL:
+        case IROpcode::LOAD_GLOBAL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void consumeInstructionUses(EmitState& state, const IRInstruction& inst) {
+    switch (inst.opcode) {
+        case IROpcode::ADD:
+        case IROpcode::SUB:
+        case IROpcode::MUL:
+        case IROpcode::DIV:
+        case IROpcode::MOD:
+        case IROpcode::EQ:
+        case IROpcode::NE:
+        case IROpcode::LT:
+        case IROpcode::GT:
+        case IROpcode::LE:
+        case IROpcode::GE:
+        case IROpcode::AND:
+        case IROpcode::OR:
+            if (inst.operands.size() >= 3) {
+                consumeUse(state, inst.operands[1]);
+                consumeUse(state, inst.operands[2]);
+            }
+            break;
+        case IROpcode::NEG:
+        case IROpcode::NOT:
+            if (inst.operands.size() >= 2) consumeUse(state, inst.operands[1]);
+            break;
+        default:
+            break;
+    }
+}
+
 void flushLiveVolatileAliases(std::ostringstream& out, const FunctionLayout& layout, EmitState& state) {
     std::vector<uint32_t> toErase;
     for (const auto& [id, reg] : state.vregAliases) {
@@ -400,6 +504,7 @@ void flushLiveVolatileAliases(std::ostringstream& out, const FunctionLayout& lay
     }
     for (uint32_t id : toErase) {
         state.vregAliases.erase(id);
+        state.localAliases.erase(id);
     }
 }
 
@@ -508,11 +613,30 @@ void clearVolatileAliases(EmitState& state) {
     for (auto it = state.vregAliases.begin(); it != state.vregAliases.end();) {
         const std::string& reg = it->second;
         if (!reg.empty() && (reg[0] == 'a' || reg[0] == 't')) {
+            state.localAliases.erase(it->first);
             it = state.vregAliases.erase(it);
         } else {
             ++it;
         }
     }
+}
+
+void clearAliases(EmitState& state) {
+    state.vregAliases.clear();
+    state.localAliases.clear();
+}
+
+bool sameOperand(const IROperand& lhs, const IROperand& rhs) {
+    return lhs.kind == rhs.kind && lhs.value == rhs.value;
+}
+
+std::optional<int> nextStoreLocalOffset(const IRInstruction* nextInst, const IROperand& source) {
+    if (!nextInst || nextInst->opcode != IROpcode::STORE_LOCAL || nextInst->operands.size() != 2 ||
+        nextInst->operands[0].kind != OperandKind::Immediate ||
+        !sameOperand(nextInst->operands[1], source)) {
+        return std::nullopt;
+    }
+    return immValue(nextInst->operands[0]);
 }
 
 std::vector<IRInstruction> removeFallthroughJumps(const std::vector<IRInstruction>& insts) {
@@ -605,6 +729,13 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                 return true;
             };
 
+            if (auto dest = definedVReg(inst);
+                dest && isSkippableDeadValue(inst) && !hasRemainingUse(state, *dest)) {
+                consumeInstructionUses(state, inst);
+                forgetVReg(state, IROperand::reg(*dest));
+                continue;
+            }
+
             switch (inst.opcode) {
                 case IROpcode::ADD:
                 case IROpcode::SUB:
@@ -621,6 +752,70 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                 case IROpcode::OR:
                     if (inst.operands.size() != 3) break;
                     {
+                    if (auto storeOffset = nextStoreLocalOffset(nextInst, inst.operands[0])) {
+                        if (const std::string* target = localReg(layout, localSlot(layout, *storeOffset))) {
+                            auto lhsLocal = localAliasOffset(state, inst.operands[1]);
+                            auto rhsLocal = localAliasOffset(state, inst.operands[2]);
+                            bool updatedInPlace = false;
+
+                            if (inst.opcode == IROpcode::ADD && lhsLocal && *lhsLocal == *storeOffset &&
+                                inst.operands[2].kind == OperandKind::Immediate &&
+                                fits12(immValue(inst.operands[2]))) {
+                                consumeUse(state, inst.operands[1]);
+                                consumeUse(state, inst.operands[2]);
+                                spillAliasesUsing(out, layout, state, *target);
+                                out << "    addi " << *target << ", " << *target << ", "
+                                    << immValue(inst.operands[2]) << "\n";
+                                updatedInPlace = true;
+                            } else if (inst.opcode == IROpcode::ADD && rhsLocal && *rhsLocal == *storeOffset &&
+                                       inst.operands[1].kind == OperandKind::Immediate &&
+                                       fits12(immValue(inst.operands[1]))) {
+                                consumeUse(state, inst.operands[1]);
+                                consumeUse(state, inst.operands[2]);
+                                spillAliasesUsing(out, layout, state, *target);
+                                out << "    addi " << *target << ", " << *target << ", "
+                                    << immValue(inst.operands[1]) << "\n";
+                                updatedInPlace = true;
+                            } else if (inst.opcode == IROpcode::SUB && lhsLocal && *lhsLocal == *storeOffset &&
+                                       inst.operands[2].kind == OperandKind::Immediate &&
+                                       fits12(-immValue(inst.operands[2]))) {
+                                consumeUse(state, inst.operands[1]);
+                                consumeUse(state, inst.operands[2]);
+                                spillAliasesUsing(out, layout, state, *target);
+                                out << "    addi " << *target << ", " << *target << ", "
+                                    << -immValue(inst.operands[2]) << "\n";
+                                updatedInPlace = true;
+                            } else if (inst.opcode == IROpcode::ADD && lhsLocal && *lhsLocal == *storeOffset) {
+                                const std::string rhs = operandReg(out, layout, state, inst.operands[2], "t0");
+                                consumeUse(state, inst.operands[1]);
+                                consumeUse(state, inst.operands[2]);
+                                spillAliasesUsing(out, layout, state, *target);
+                                out << "    add " << *target << ", " << *target << ", " << rhs << "\n";
+                                updatedInPlace = true;
+                            } else if (inst.opcode == IROpcode::ADD && rhsLocal && *rhsLocal == *storeOffset) {
+                                const std::string lhs = operandReg(out, layout, state, inst.operands[1], "t0");
+                                consumeUse(state, inst.operands[1]);
+                                consumeUse(state, inst.operands[2]);
+                                spillAliasesUsing(out, layout, state, *target);
+                                out << "    add " << *target << ", " << *target << ", " << lhs << "\n";
+                                updatedInPlace = true;
+                            } else if (inst.opcode == IROpcode::SUB && lhsLocal && *lhsLocal == *storeOffset) {
+                                const std::string rhs = operandReg(out, layout, state, inst.operands[2], "t0");
+                                consumeUse(state, inst.operands[1]);
+                                consumeUse(state, inst.operands[2]);
+                                spillAliasesUsing(out, layout, state, *target);
+                                out << "    sub " << *target << ", " << *target << ", " << rhs << "\n";
+                                updatedInPlace = true;
+                            }
+
+                            if (updatedInPlace) {
+                                rememberAlias(state, inst.operands[0], *target);
+                                rememberLocalAlias(state, inst.operands[0], *storeOffset);
+                                break;
+                            }
+                        }
+                    }
+
                     const std::string rd = resultReg(layout, inst.operands[0], "t2");
                     if (inst.opcode == IROpcode::ADD &&
                         inst.operands[1].kind != OperandKind::Immediate &&
@@ -746,6 +941,7 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                     if (inst.operands.size() != 2) break;
                     if (const std::string* cached = localReg(layout, localSlot(layout, immValue(inst.operands[1])))) {
                         aliasVReg(out, layout, state, inst.operands[0], *cached);
+                        rememberLocalAlias(state, inst.operands[0], localSlot(layout, immValue(inst.operands[1])));
                         break;
                     }
                     spillAliasesUsing(out, layout, state, "t0");
@@ -793,7 +989,7 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                 case IROpcode::LABEL:
                     if (inst.operands.size() != 1) break;
                     flushLiveVolatileAliases(out, layout, state);
-                    state.vregAliases.clear();
+                    clearAliases(state);
                     out << labelName(fn.name, inst.operands[0]) << ":\n";
                     break;
                 case IROpcode::JMP:
@@ -894,7 +1090,9 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                         loadOperand(out, layout, state, inst.operands[0], "a0");
                         consumeUse(state, inst.operands[0]);
                     }
-                    out << "    j " << returnLabel << "\n";
+                    if (nextInst) {
+                        out << "    j " << returnLabel << "\n";
+                    }
                     break;
                 default:
                     break;

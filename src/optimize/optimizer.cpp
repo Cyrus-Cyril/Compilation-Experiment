@@ -445,6 +445,38 @@ IRProgram inlineSmallFunctions(const IRProgram& input) {
     return output;
 }
 
+IRProgram removeUncalledInternalFunctions(const IRProgram& input) {
+    IRProgram output = input;
+    bool hasMain = false;
+    for (const auto& fn : output.functions) {
+        if (fn.name == "main") {
+            hasMain = true;
+            break;
+        }
+    }
+    if (!hasMain) return output;
+
+    std::unordered_set<std::string> called;
+    for (const auto& fn : output.functions) {
+        for (const auto& inst : fn.instructions) {
+            if (inst.opcode == IROpcode::CALL && inst.operands.size() >= 2 &&
+                inst.operands[1].kind == OperandKind::FuncName) {
+                called.insert(stringValue(inst.operands[1]));
+            }
+        }
+    }
+
+    std::vector<IRFunction> kept;
+    kept.reserve(output.functions.size());
+    for (auto& fn : output.functions) {
+        if (fn.name == "main" || called.count(fn.name)) {
+            kept.push_back(std::move(fn));
+        }
+    }
+    output.functions = std::move(kept);
+    return output;
+}
+
 bool isCopyAdd(const IRInstruction& inst, IROperand& source) {
     if (inst.opcode != IROpcode::ADD || inst.operands.size() != 3) return false;
     const auto& lhs = inst.operands[1];
@@ -1006,6 +1038,7 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
         fn.instructions = rewriteJumpChains(std::move(fn.instructions));
     }
 
+    output = removeUncalledInternalFunctions(output);
     return output;
 }
 

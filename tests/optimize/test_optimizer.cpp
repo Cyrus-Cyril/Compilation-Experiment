@@ -240,7 +240,16 @@ static void test_small_function_inlining() {
     program.functions.push_back(std::move(mainFn));
 
     IRProgram optimized = Optimizer{}.optimize(program);
-    const auto& mainInsts = optimized.functions[1].instructions;
+    const IRFunction* optimizedMain = nullptr;
+    for (const auto& fn : optimized.functions) {
+        if (fn.name == "main") {
+            optimizedMain = &fn;
+            break;
+        }
+    }
+    check(optimizedMain != nullptr, "keeps main function after removing inlined helpers");
+    if (!optimizedMain) return;
+    const auto& mainInsts = optimizedMain->instructions;
 
     bool hasCall = false;
     for (const auto& inst : mainInsts) {

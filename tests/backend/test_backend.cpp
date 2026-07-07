@@ -103,7 +103,7 @@ static void test_expressions_and_locals() {
     check(contains(asmText, "s1") || contains(asmText, "s2") ||
           contains(asmText, "t4") || contains(asmText, "t5") || contains(asmText, "t6"),
           "uses register cache");
-    check(contains(asmText, "slti t2,") || contains(asmText, "slt t2,"), "emits less-than comparison");
+    check(contains(asmText, "slti ") || contains(asmText, "slt "), "emits less-than comparison");
     check(contains(asmText, "seqz "), "emits logical not");
     check(contains(asmText, "neg "), "emits unary negation");
 }
@@ -127,7 +127,7 @@ static void test_globals_and_control_flow() {
     mainFn.instructions.push_back(
         {IROpcode::OR, {IROperand::reg(1), IROperand::reg(0), IROperand::imm(0)}});
     mainFn.instructions.push_back({IROpcode::LABEL, {IROperand::label(2)}});
-    mainFn.instructions.push_back({IROpcode::RET, {IROperand::reg(0)}});
+    mainFn.instructions.push_back({IROpcode::RET, {IROperand::reg(1)}});
     program.functions.push_back(std::move(mainFn));
 
     CodeGenerator gen;
