@@ -85,6 +85,10 @@ std::optional<int32_t> foldUnary(IROpcode op, int32_t value) {
     }
 }
 
+bool sameOperand(const IROperand& lhs, const IROperand& rhs) {
+    return lhs.kind == rhs.kind && lhs.value == rhs.value;
+}
+
 std::optional<IRInstruction> simplifyAlgebraic(const IRInstruction& inst) {
     if (inst.operands.size() != 3) return std::nullopt;
 
@@ -96,6 +100,8 @@ std::optional<IRInstruction> simplifyAlgebraic(const IRInstruction& inst) {
     const int32_t lhsVal = lhsImm ? immValue(lhs) : 0;
     const int32_t rhsVal = rhsImm ? immValue(rhs) : 0;
 
+    const bool sameOperands = sameOperand(lhs, rhs);
+
     switch (inst.opcode) {
         case IROpcode::ADD:
             if (rhsImm && rhsVal == 0) return IRInstruction{IROpcode::ADD, {dest, lhs, IROperand::imm(0)}};
@@ -103,6 +109,7 @@ std::optional<IRInstruction> simplifyAlgebraic(const IRInstruction& inst) {
             break;
         case IROpcode::SUB:
             if (rhsImm && rhsVal == 0) return IRInstruction{IROpcode::ADD, {dest, lhs, IROperand::imm(0)}};
+            if (sameOperands) return IRInstruction{IROpcode::ADD, {dest, IROperand::imm(0), IROperand::imm(0)}};
             break;
         case IROpcode::MUL:
             if ((rhsImm && rhsVal == 0) || (lhsImm && lhsVal == 0)) {
@@ -110,9 +117,20 @@ std::optional<IRInstruction> simplifyAlgebraic(const IRInstruction& inst) {
             }
             if (rhsImm && rhsVal == 1) return IRInstruction{IROpcode::ADD, {dest, lhs, IROperand::imm(0)}};
             if (lhsImm && lhsVal == 1) return IRInstruction{IROpcode::ADD, {dest, rhs, IROperand::imm(0)}};
+            if (rhsImm && rhsVal == -1) return IRInstruction{IROpcode::NEG, {dest, lhs}};
+            if (lhsImm && lhsVal == -1) return IRInstruction{IROpcode::NEG, {dest, rhs}};
             break;
         case IROpcode::DIV:
             if (rhsImm && rhsVal == 1) return IRInstruction{IROpcode::ADD, {dest, lhs, IROperand::imm(0)}};
+            if (rhsImm && rhsVal == -1) return IRInstruction{IROpcode::NEG, {dest, lhs}};
+            if (sameOperands && lhs.kind == OperandKind::VirtualReg)
+                return IRInstruction{IROpcode::ADD, {dest, IROperand::imm(0), IROperand::imm(1)}};
+            break;
+        case IROpcode::MOD:
+            if (rhsImm && (rhsVal == 1 || rhsVal == -1))
+                return IRInstruction{IROpcode::ADD, {dest, IROperand::imm(0), IROperand::imm(0)}};
+            if (sameOperands && lhs.kind == OperandKind::VirtualReg)
+                return IRInstruction{IROpcode::ADD, {dest, IROperand::imm(0), IROperand::imm(0)}};
             break;
         case IROpcode::AND:
             if ((rhsImm && rhsVal == 0) || (lhsImm && lhsVal == 0)) {
@@ -122,6 +140,30 @@ std::optional<IRInstruction> simplifyAlgebraic(const IRInstruction& inst) {
         case IROpcode::OR:
             if (rhsImm && rhsVal == 0) return IRInstruction{IROpcode::ADD, {dest, lhs, IROperand::imm(0)}};
             if (lhsImm && lhsVal == 0) return IRInstruction{IROpcode::ADD, {dest, rhs, IROperand::imm(0)}};
+            break;
+        case IROpcode::LT:
+            if (sameOperands && lhs.kind == OperandKind::VirtualReg)
+                return IRInstruction{IROpcode::ADD, {dest, IROperand::imm(0), IROperand::imm(0)}};
+            break;
+        case IROpcode::LE:
+            if (sameOperands && lhs.kind == OperandKind::VirtualReg)
+                return IRInstruction{IROpcode::ADD, {dest, IROperand::imm(0), IROperand::imm(1)}};
+            break;
+        case IROpcode::GT:
+            if (sameOperands && lhs.kind == OperandKind::VirtualReg)
+                return IRInstruction{IROpcode::ADD, {dest, IROperand::imm(0), IROperand::imm(0)}};
+            break;
+        case IROpcode::GE:
+            if (sameOperands && lhs.kind == OperandKind::VirtualReg)
+                return IRInstruction{IROpcode::ADD, {dest, IROperand::imm(0), IROperand::imm(1)}};
+            break;
+        case IROpcode::EQ:
+            if (sameOperands && lhs.kind == OperandKind::VirtualReg)
+                return IRInstruction{IROpcode::ADD, {dest, IROperand::imm(0), IROperand::imm(1)}};
+            break;
+        case IROpcode::NE:
+            if (sameOperands && lhs.kind == OperandKind::VirtualReg)
+                return IRInstruction{IROpcode::ADD, {dest, IROperand::imm(0), IROperand::imm(0)}};
             break;
         default:
             break;
@@ -243,10 +285,6 @@ std::string expressionKey(const IRInstruction& inst) {
         out << '|' << operandKey(inst.operands[i]);
     }
     return out.str();
-}
-
-bool sameOperand(const IROperand& lhs, const IROperand& rhs) {
-    return lhs.kind == rhs.kind && lhs.value == rhs.value;
 }
 
 uint32_t maxRegId(const std::vector<IRInstruction>& insts) {
@@ -890,6 +928,25 @@ std::vector<IRInstruction> invertBranchOverJump(std::vector<IRInstruction> insts
     return result;
 }
 
+std::vector<IRInstruction> removeSelfCopies(std::vector<IRInstruction> insts) {
+    std::vector<IRInstruction> result;
+    result.reserve(insts.size());
+
+    for (auto& inst : insts) {
+        // 移除 ADD %dest, %dest, 0 自复制（no-op）
+        if (inst.opcode == IROpcode::ADD && inst.operands.size() == 3 &&
+            inst.operands[1].kind == OperandKind::VirtualReg &&
+            inst.operands[2].kind == OperandKind::Immediate &&
+            immValue(inst.operands[2]) == 0 &&
+            sameOperand(inst.operands[0], inst.operands[1])) {
+            continue;
+        }
+        result.push_back(std::move(inst));
+    }
+
+    return result;
+}
+
 }  // namespace
 
 IRProgram Optimizer::optimize(const IRProgram& input) {
@@ -1008,6 +1065,16 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
                                 continue;
                             }
                         }
+                        // 相同操作数: BEQ x,x → 始终跳转; BNE x,x → 始终不跳转
+                        if (inst.operands.size() == 3 &&
+                            sameOperand(inst.operands[0], inst.operands[1])) {
+                            if (inst.opcode == IROpcode::BEQ) {
+                                inst = {IROpcode::JMP, {inst.operands[2]}};
+                            } else {
+                                constants.clear();
+                                continue;
+                            }
+                        }
                         constants.clear();
                         localConstants.clear();
                         break;
@@ -1029,11 +1096,142 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
             fn.instructions = propagateCopiesAndCse(std::move(fn.instructions));
             fn.instructions = removeDeadValueInsts(fn.instructions);
             fn.instructions = removeDeadLocalStores(fn.instructions);
+            fn.instructions = removeSelfCopies(std::move(fn.instructions));
             fn.instructions = invertBranchOverJump(std::move(fn.instructions));
             fn.instructions = rewriteJumpChains(std::move(fn.instructions));
             if (fn.instructions.size() == before) break;
         }
+
+        // 复制传播/CSE/DCE 后重新运行常量折叠，利用新揭示的常量
+        {
+            std::unordered_map<uint32_t, int32_t> constants;
+            std::unordered_map<int32_t, int32_t> localConstants;
+            std::vector<IRInstruction> reoptimized;
+            bool unreachable = false;
+
+            for (auto inst : fn.instructions) {
+                if (unreachable && inst.opcode != IROpcode::LABEL) {
+                    continue;
+                }
+                if (inst.opcode == IROpcode::LABEL) {
+                    unreachable = false;
+                    constants.clear();
+                    localConstants.clear();
+                    reoptimized.push_back(std::move(inst));
+                    continue;
+                }
+
+                replaceKnownOperands(inst, constants);
+
+                if (isBinaryFoldable(inst.opcode) && inst.operands.size() == 3) {
+                    auto lhs = constValue(inst.operands[1], constants);
+                    auto rhs = constValue(inst.operands[2], constants);
+                    auto folded = (lhs && rhs) ? foldBinary(inst.opcode, *lhs, *rhs) : std::nullopt;
+                    if (folded) {
+                        inst = {IROpcode::ADD,
+                                {inst.operands[0], IROperand::imm(0), IROperand::imm(*folded)}};
+                    }
+                    rememberDest(inst, constants, folded);
+                } else if (isUnaryFoldable(inst.opcode) && inst.operands.size() == 2) {
+                    auto operand = constValue(inst.operands[1], constants);
+                    auto folded = operand ? foldUnary(inst.opcode, *operand) : std::nullopt;
+                    if (folded) {
+                        inst = {IROpcode::ADD,
+                                {inst.operands[0], IROperand::imm(0), IROperand::imm(*folded)}};
+                    }
+                    rememberDest(inst, constants, folded);
+                } else {
+                    switch (inst.opcode) {
+                        case IROpcode::LOAD_LOCAL:
+                            if (inst.operands.size() == 2 &&
+                                inst.operands[1].kind == OperandKind::Immediate) {
+                                auto found = localConstants.find(immValue(inst.operands[1]));
+                                if (found != localConstants.end()) {
+                                    inst = {IROpcode::ADD,
+                                            {inst.operands[0], IROperand::imm(0), IROperand::imm(found->second)}};
+                                    rememberDest(inst, constants, found->second);
+                                    break;
+                                }
+                            }
+                            rememberDest(inst, constants, std::nullopt);
+                            break;
+                        case IROpcode::STORE_LOCAL:
+                            if (inst.operands.size() >= 2 &&
+                                inst.operands[0].kind == OperandKind::Immediate) {
+                                auto value = constValue(inst.operands[1], constants);
+                                if (value) {
+                                    localConstants[immValue(inst.operands[0])] = *value;
+                                } else {
+                                    localConstants.erase(immValue(inst.operands[0]));
+                                }
+                            }
+                            break;
+                        case IROpcode::LOAD_GLOBAL:
+                            if (inst.operands.size() == 2 &&
+                                inst.operands[1].kind == OperandKind::GlobalName) {
+                                auto found = globalConstants.find(stringValue(inst.operands[1]));
+                                if (found != globalConstants.end()) {
+                                    inst = {IROpcode::ADD,
+                                            {inst.operands[0], IROperand::imm(0), IROperand::imm(found->second)}};
+                                    rememberDest(inst, constants, found->second);
+                                    break;
+                                }
+                            }
+                            rememberDest(inst, constants, std::nullopt);
+                            break;
+                        case IROpcode::JMP:
+                            constants.clear();
+                            localConstants.clear();
+                            unreachable = true;
+                            break;
+                        case IROpcode::BEQ:
+                        case IROpcode::BNE: {
+                            auto lhs = constValue(inst.operands[0], constants);
+                            auto rhs = constValue(inst.operands[1], constants);
+                            if (lhs && rhs) {
+                                bool taken = inst.opcode == IROpcode::BEQ ? (*lhs == *rhs) : (*lhs != *rhs);
+                                if (taken) {
+                                    inst = {IROpcode::JMP, {inst.operands[2]}};
+                                } else {
+                                    constants.clear();
+                                    continue;
+                                }
+                            }
+                            // 相同操作数: BEQ x,x → 始终跳转; BNE x,x → 始终不跳转
+                            if (inst.operands.size() == 3 &&
+                                sameOperand(inst.operands[0], inst.operands[1])) {
+                                if (inst.opcode == IROpcode::BEQ) {
+                                    inst = {IROpcode::JMP, {inst.operands[2]}};
+                                } else {
+                                    constants.clear();
+                                    continue;
+                                }
+                            }
+                            constants.clear();
+                            localConstants.clear();
+                            break;
+                        }
+                        default:
+                            break;
+                    }
+                }
+
+                if (inst.opcode == IROpcode::RET) {
+                    unreachable = true;
+                }
+                reoptimized.push_back(std::move(inst));
+            }
+            fn.instructions = std::move(reoptimized);
+        }
+
         fn.instructions = rewriteTailRecursion(fn);
+        fn.instructions = invertBranchOverJump(std::move(fn.instructions));
+        fn.instructions = rewriteJumpChains(std::move(fn.instructions));
+
+        // 尾递归转换后重新清理死代码
+        fn.instructions = removeDeadValueInsts(fn.instructions);
+        fn.instructions = removeDeadLocalStores(fn.instructions);
+        fn.instructions = removeSelfCopies(std::move(fn.instructions));
         fn.instructions = invertBranchOverJump(std::move(fn.instructions));
         fn.instructions = rewriteJumpChains(std::move(fn.instructions));
     }

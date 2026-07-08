@@ -99,7 +99,7 @@ static void test_expressions_and_locals() {
     CodeGenerator gen;
     std::string asmText = gen.generate(program);
 
-    check(contains(asmText, "mul "), "emits multiplication");
+    check(contains(asmText, "mul ") || contains(asmText, "slli "), "emits multiplication");
     check(contains(asmText, "s1") || contains(asmText, "s2") ||
           contains(asmText, "t4") || contains(asmText, "t5") || contains(asmText, "t6"),
           "uses register cache");

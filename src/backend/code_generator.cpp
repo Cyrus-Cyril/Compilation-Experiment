@@ -44,6 +44,19 @@ bool fits12(int32_t value) {
     return value >= -2048 && value <= 2047;
 }
 
+bool isPowerOfTwo(int32_t value) {
+    return value > 1 && (value & (value - 1)) == 0;
+}
+
+int ilog2(int32_t value) {
+    int result = 0;
+    while (value > 1) {
+        value >>= 1;
+        ++result;
+    }
+    return result;
+}
+
 struct FunctionLayout {
     int frameSize = 16;
     int localSize = 0;
@@ -865,6 +878,73 @@ std::string CodeGenerator::generate(const IRProgram& program) {
                         consumeUse(state, inst.operands[2]);
                         spillAliasesUsing(out, layout, state, rd);
                         out << "    slti " << rd << ", " << lhs << ", " << immValue(inst.operands[2]) << "\n";
+                        storeVReg(out, layout, state, inst.operands[0], rd.c_str(),
+                                  canUseAliasOnly(inst.operands[0]));
+                        break;
+                    }
+                    // 强度削减: MUL × 2的幂 → slli
+                    if (inst.opcode == IROpcode::MUL &&
+                        inst.operands[1].kind != OperandKind::Immediate &&
+                        inst.operands[2].kind == OperandKind::Immediate &&
+                        isPowerOfTwo(immValue(inst.operands[2]))) {
+                        const std::string lhs = operandReg(out, layout, state, inst.operands[1], "t0");
+                        consumeUse(state, inst.operands[1]);
+                        consumeUse(state, inst.operands[2]);
+                        spillAliasesUsing(out, layout, state, rd);
+                        out << "    slli " << rd << ", " << lhs << ", " << ilog2(immValue(inst.operands[2])) << "\n";
+                        storeVReg(out, layout, state, inst.operands[0], rd.c_str(),
+                                  canUseAliasOnly(inst.operands[0]));
+                        break;
+                    }
+                    if (inst.opcode == IROpcode::MUL &&
+                        inst.operands[1].kind == OperandKind::Immediate &&
+                        inst.operands[2].kind != OperandKind::Immediate &&
+                        isPowerOfTwo(immValue(inst.operands[1]))) {
+                        const std::string rhs = operandReg(out, layout, state, inst.operands[2], "t0");
+                        consumeUse(state, inst.operands[1]);
+                        consumeUse(state, inst.operands[2]);
+                        spillAliasesUsing(out, layout, state, rd);
+                        out << "    slli " << rd << ", " << rhs << ", " << ilog2(immValue(inst.operands[1])) << "\n";
+                        storeVReg(out, layout, state, inst.operands[0], rd.c_str(),
+                                  canUseAliasOnly(inst.operands[0]));
+                        break;
+                    }
+                    // 强度削减: MUL × (2^n+1) → shift+add (如 x*3, x*5, x*9)
+                    if (inst.opcode == IROpcode::MUL &&
+                        inst.operands[1].kind != OperandKind::Immediate &&
+                        inst.operands[2].kind == OperandKind::Immediate) {
+                        int32_t muli = immValue(inst.operands[2]);
+                        if (muli > 1 && !isPowerOfTwo(muli) &&
+                            (muli - 1) > 0 && ((muli - 1) & (muli - 2)) == 0) {
+                            int n = ilog2(muli - 1);
+                            const std::string lhs = operandReg(out, layout, state, inst.operands[1], "t0");
+                            consumeUse(state, inst.operands[1]);
+                            consumeUse(state, inst.operands[2]);
+                            spillAliasesUsing(out, layout, state, rd);
+                            spillAliasesUsing(out, layout, state, "t0");
+                            out << "    slli t0, " << lhs << ", " << n << "\n";
+                            out << "    add " << rd << ", t0, " << lhs << "\n";
+                            storeVReg(out, layout, state, inst.operands[0], rd.c_str(),
+                                      canUseAliasOnly(inst.operands[0]));
+                            break;
+                         }
+                    }
+                    // 强度削减: DIV ÷ 2的幂 → srai（含符号修正）
+                    if (inst.opcode == IROpcode::DIV &&
+                        inst.operands[1].kind != OperandKind::Immediate &&
+                        inst.operands[2].kind == OperandKind::Immediate &&
+                        isPowerOfTwo(immValue(inst.operands[2]))) {
+                        const std::string lhs = operandReg(out, layout, state, inst.operands[1], "t0");
+                        int n = ilog2(immValue(inst.operands[2]));
+                        consumeUse(state, inst.operands[1]);
+                        consumeUse(state, inst.operands[2]);
+                        spillAliasesUsing(out, layout, state, rd);
+                        spillAliasesUsing(out, layout, state, "t0");
+                        // 有符号除法: 截断向零，用 srai + 符号修正
+                        out << "    srai t0, " << lhs << ", 31\n";
+                        out << "    srli t0, t0, " << (32 - n) << "\n";
+                        out << "    add t0, " << lhs << ", t0\n";
+                        out << "    srai " << rd << ", t0, " << n << "\n";
                         storeVReg(out, layout, state, inst.operands[0], rd.c_str(),
                                   canUseAliasOnly(inst.operands[0]));
                         break;
