@@ -155,7 +155,40 @@ FunctionLayout buildLayout(const IRFunction& fn) {
     std::unordered_map<int, int> localHeat;
     std::unordered_map<uint32_t, int> vregHeat;
 
-    for (const auto& inst : fn.instructions) {
+    // 循环深度估算：检测回边并标记循环体指令
+    std::vector<int> loopDepths(fn.instructions.size(), 0);
+    {
+        std::unordered_map<uint32_t, size_t> labelPos;
+        for (size_t i = 0; i < fn.instructions.size(); ++i) {
+            if (fn.instructions[i].opcode == IROpcode::LABEL &&
+                !fn.instructions[i].operands.empty() &&
+                fn.instructions[i].operands[0].kind == OperandKind::Label) {
+                labelPos[labelId(fn.instructions[i].operands[0])] = i;
+            }
+        }
+        for (size_t i = 0; i < fn.instructions.size(); ++i) {
+            const auto& inst = fn.instructions[i];
+            if ((inst.opcode == IROpcode::BEQ || inst.opcode == IROpcode::BNE ||
+                 inst.opcode == IROpcode::JMP) && !inst.operands.empty() &&
+                inst.operands.back().kind == OperandKind::Label) {
+                uint32_t tid = labelId(inst.operands.back());
+                auto found = labelPos.find(tid);
+                if (found != labelPos.end() && found->second < i) {
+                    for (size_t j = found->second; j <= i && j < loopDepths.size(); ++j) {
+                        loopDepths[j]++;
+                    }
+                }
+            }
+        }
+    }
+
+    for (size_t idx = 0; idx < fn.instructions.size(); ++idx) {
+        const auto& inst = fn.instructions[idx];
+        int weight = 1;
+        if (loopDepths[idx] > 0) {
+            weight = 1 + loopDepths[idx] * 10;
+        }
+
         if (inst.opcode == IROpcode::CALL) {
             hasCall = true;
         }
@@ -163,18 +196,18 @@ FunctionLayout buildLayout(const IRFunction& fn) {
             if (operand.kind == OperandKind::VirtualReg) {
                 hasReg = true;
                 scanOperand(operand, maxReg);
-                ++vregHeat[regId(operand)];
+                vregHeat[regId(operand)] += weight;
             }
         }
 
         if (inst.opcode == IROpcode::STORE_LOCAL && !inst.operands.empty() &&
             inst.operands[0].kind == OperandKind::Immediate) {
             maxLocalEnd = std::max(maxLocalEnd, immValue(inst.operands[0]) + 4);
-            ++localHeat[immValue(inst.operands[0])];
+            localHeat[immValue(inst.operands[0])] += weight;
         } else if (inst.opcode == IROpcode::LOAD_LOCAL && inst.operands.size() >= 2 &&
                    inst.operands[1].kind == OperandKind::Immediate) {
             maxLocalEnd = std::max(maxLocalEnd, immValue(inst.operands[1]) + 4);
-            ++localHeat[immValue(inst.operands[1])];
+            localHeat[immValue(inst.operands[1])] += weight;
         }
     }
 
@@ -190,11 +223,19 @@ FunctionLayout buildLayout(const IRFunction& fn) {
         "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11"};
     std::vector<std::string> localAvailableRegs;
     if (!layout.hasCall) {
+        // 叶函数：仅用调用者保存寄存器，避免 s-reg save/restore 开销
+        // a0 保留给返回值，a1-a7/t4-t6 用作计算寄存器
+        // t0-t3 由 emit 函数自动使用（loadOperand 等）
         localAvailableRegs.push_back("t4");
         localAvailableRegs.push_back("t5");
         localAvailableRegs.push_back("t6");
-        localAvailableRegs.insert(
-            localAvailableRegs.end(), savedAvailableRegs.begin(), savedAvailableRegs.end());
+        localAvailableRegs.push_back("a1");
+        localAvailableRegs.push_back("a2");
+        localAvailableRegs.push_back("a3");
+        localAvailableRegs.push_back("a4");
+        localAvailableRegs.push_back("a5");
+        localAvailableRegs.push_back("a6");
+        localAvailableRegs.push_back("a7");
     } else {
         localAvailableRegs = savedAvailableRegs;
     }
