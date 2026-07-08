@@ -947,78 +947,6 @@ std::vector<IRInstruction> removeSelfCopies(std::vector<IRInstruction> insts) {
     return result;
 }
 
-bool hasSideEffect(const IRInstruction& inst) {
-    switch (inst.opcode) {
-        case IROpcode::CALL:
-        case IROpcode::RET:
-        case IROpcode::STORE_GLOBAL:
-        case IROpcode::PARAM:
-            return true;
-        case IROpcode::STORE_LOCAL:
-            // 存储到局部变量是副作用（可能影响后续 LOAD）
-            return true;
-        default:
-            return false;
-    }
-}
-
-std::vector<IRInstruction> removeEmptyLoops(std::vector<IRInstruction> insts) {
-    // 第一步：定位所有标签和回边
-    std::unordered_map<uint32_t, size_t> labelPos;
-    for (size_t i = 0; i < insts.size(); ++i) {
-        if (insts[i].opcode == IROpcode::LABEL && !insts[i].operands.empty() &&
-            insts[i].operands[0].kind == OperandKind::Label) {
-            labelPos[labelId(insts[i].operands[0])] = i;
-        }
-    }
-
-    // 收集所有回边
-    std::vector<std::pair<size_t, size_t>> loops;  // [start, end]
-    for (size_t i = 0; i < insts.size(); ++i) {
-        const auto& inst = insts[i];
-        if ((inst.opcode == IROpcode::JMP || inst.opcode == IROpcode::BEQ ||
-             inst.opcode == IROpcode::BNE) && !inst.operands.empty() &&
-            inst.operands.back().kind == OperandKind::Label) {
-            uint32_t tid = labelId(inst.operands.back());
-            auto found = labelPos.find(tid);
-            if (found != labelPos.end() && found->second < i) {
-                loops.emplace_back(found->second, i);
-            }
-        }
-    }
-
-    // 第二步：检查哪些循环体完全没有副作用
-    std::vector<bool> deadZone(insts.size(), false);
-    for (const auto& [start, end] : loops) {
-        bool hasSide = false;
-        for (size_t j = start; j <= end; ++j) {
-            if (hasSideEffect(insts[j])) {
-                hasSide = true;
-                break;
-            }
-        }
-        if (!hasSide) {
-            for (size_t j = start; j <= end; ++j) {
-                deadZone[j] = true;
-            }
-        }
-    }
-
-    // 第三步：移除死循环区域
-    if (std::none_of(deadZone.begin(), deadZone.end(), [](bool b) { return b; })) {
-        return insts;
-    }
-
-    std::vector<IRInstruction> result;
-    result.reserve(insts.size());
-    for (size_t i = 0; i < insts.size(); ++i) {
-        if (!deadZone[i]) {
-            result.push_back(std::move(insts[i]));
-        }
-    }
-    return result;
-}
-
 }  // namespace
 
 IRProgram Optimizer::optimize(const IRProgram& input) {
@@ -1171,7 +1099,6 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
             fn.instructions = removeSelfCopies(std::move(fn.instructions));
             fn.instructions = invertBranchOverJump(std::move(fn.instructions));
             fn.instructions = rewriteJumpChains(std::move(fn.instructions));
-            fn.instructions = removeEmptyLoops(std::move(fn.instructions));
             if (fn.instructions.size() == before) break;
         }
 
@@ -1307,7 +1234,6 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
         fn.instructions = removeSelfCopies(std::move(fn.instructions));
         fn.instructions = invertBranchOverJump(std::move(fn.instructions));
         fn.instructions = rewriteJumpChains(std::move(fn.instructions));
-        fn.instructions = removeEmptyLoops(std::move(fn.instructions));
     }
 
     output = removeUncalledInternalFunctions(output);
