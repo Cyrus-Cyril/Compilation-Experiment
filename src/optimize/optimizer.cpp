@@ -932,7 +932,8 @@ std::vector<IRInstruction> removeSelfCopies(std::vector<IRInstruction> insts) {
     std::vector<IRInstruction> result;
     result.reserve(insts.size());
 
-    for (auto& inst : insts) {
+    for (size_t i = 0; i < insts.size(); ++i) {
+        auto& inst = insts[i];
         // 移除 ADD %dest, %dest, 0 自复制（no-op）
         if (inst.opcode == IROpcode::ADD && inst.operands.size() == 3 &&
             inst.operands[1].kind == OperandKind::VirtualReg &&
@@ -941,10 +942,711 @@ std::vector<IRInstruction> removeSelfCopies(std::vector<IRInstruction> insts) {
             sameOperand(inst.operands[0], inst.operands[1])) {
             continue;
         }
+        // 移除连续 STORE_LOCAL 到同一偏移的冗余存储（只保留最后一个）
+        if (inst.opcode == IROpcode::STORE_LOCAL && inst.operands.size() == 2 &&
+            inst.operands[0].kind == OperandKind::Immediate) {
+            int32_t offset = immValue(inst.operands[0]);
+            size_t j = i + 1;
+            while (j < insts.size() &&
+                   insts[j].opcode == IROpcode::STORE_LOCAL &&
+                   insts[j].operands.size() == 2 &&
+                   insts[j].operands[0].kind == OperandKind::Immediate &&
+                   immValue(insts[j].operands[0]) == offset) {
+                ++j;
+            }
+            if (j > i + 1) {
+                // 跳过中间的所有 STORE_LOCAL，只保留最后一个写入
+                // 但需要确保它们之间没有 LOAD_LOCAL 读取该偏移
+                bool hasInterveningLoad = false;
+                for (size_t k = i + 1; k < j; ++k) {
+                    if (insts[k].opcode == IROpcode::LOAD_LOCAL &&
+                        insts[k].operands.size() == 2 &&
+                        insts[k].operands[1].kind == OperandKind::Immediate &&
+                        immValue(insts[k].operands[1]) == offset) {
+                        hasInterveningLoad = true;
+                        break;
+                    }
+                    if (insts[k].opcode == IROpcode::CALL) {
+                        hasInterveningLoad = true;  // 保守
+                        break;
+                    }
+                }
+                if (!hasInterveningLoad) {
+                    // 跳过前面的冗余存储，只 push 最后一个
+                    for (size_t k = i; k < j - 1; ++k) {
+                        // 跳过
+                    }
+                    i = j - 1;
+                    result.push_back(std::move(insts[i]));
+                    continue;
+                }
+            }
+        }
         result.push_back(std::move(inst));
     }
 
     return result;
+}
+
+// ============================================================
+// 基本块划分
+// ============================================================
+
+struct BasicBlock {
+    size_t startIdx;       // 起始指令索引
+    size_t endIdx;         // 结束指令索引（不包含）
+    uint32_t labelId;      // 入口标签 id（0 表示无标签）
+    bool hasLabel;
+};
+
+std::vector<BasicBlock> splitBasicBlocks(const std::vector<IRInstruction>& insts) {
+    std::vector<BasicBlock> blocks;
+    if (insts.empty()) return blocks;
+
+    size_t start = 0;
+    uint32_t entryLabel = 0;
+    bool hasLabel = false;
+
+    for (size_t i = 0; i < insts.size(); ++i) {
+        if (i > start && insts[i].opcode == IROpcode::LABEL && insts[i].operands.size() == 1) {
+            blocks.push_back({start, i, entryLabel, hasLabel});
+            start = i;
+            entryLabel = labelId(insts[i].operands[0]);
+            hasLabel = true;
+        } else if (insts[i].opcode == IROpcode::JMP ||
+                   insts[i].opcode == IROpcode::BEQ ||
+                   insts[i].opcode == IROpcode::BNE ||
+                   insts[i].opcode == IROpcode::RET) {
+            blocks.push_back({start, i + 1, entryLabel, hasLabel});
+            start = i + 1;
+            entryLabel = 0;
+            hasLabel = false;
+            if (i + 1 < insts.size() && insts[i + 1].opcode != IROpcode::LABEL) {
+                hasLabel = false;
+            }
+        }
+    }
+
+    if (start < insts.size()) {
+        blocks.push_back({start, insts.size(), entryLabel, hasLabel});
+    }
+
+    return blocks;
+}
+
+// ============================================================
+// 按基本块消除死存储（支持控制流）
+// ============================================================
+
+std::vector<IRInstruction> removeDeadLocalStoresPerBlock(std::vector<IRInstruction> insts) {
+    auto blocks = splitBasicBlocks(insts);
+    if (blocks.size() <= 1) {
+        // 单基本块：使用原有逻辑
+        return removeDeadLocalStores(std::move(insts));
+    }
+
+    std::unordered_set<int32_t> allLoaded;
+    for (const auto& inst : insts) {
+        if (inst.opcode == IROpcode::LOAD_LOCAL && inst.operands.size() >= 2 &&
+            inst.operands[1].kind == OperandKind::Immediate) {
+            allLoaded.insert(immValue(inst.operands[1]));
+        }
+    }
+
+    if (allLoaded.empty()) return insts;
+
+    std::vector<IRInstruction> result;
+    result.reserve(insts.size());
+
+    for (const auto& block : blocks) {
+        std::unordered_set<int32_t> liveLocals;
+        std::vector<IRInstruction> blockInsts(
+            insts.begin() + static_cast<ptrdiff_t>(block.startIdx),
+            insts.begin() + static_cast<ptrdiff_t>(block.endIdx));
+
+        // 反向遍历块内指令，标记活跃局部变量
+        for (auto it = blockInsts.rbegin(); it != blockInsts.rend(); ++it) {
+            const IRInstruction& inst = *it;
+
+            if (inst.opcode == IROpcode::CALL || inst.opcode == IROpcode::STORE_GLOBAL) {
+                // 函数调用/全局存储：保守地标记所有被加载过的局部变量为活跃
+                for (int32_t offset : allLoaded) {
+                    liveLocals.insert(offset);
+                }
+                continue;
+            }
+
+            if (inst.opcode == IROpcode::LOAD_LOCAL && inst.operands.size() >= 2 &&
+                inst.operands[1].kind == OperandKind::Immediate) {
+                liveLocals.insert(immValue(inst.operands[1]));
+                continue;
+            }
+        }
+
+        // 正向遍历，只保留活跃存储
+        for (size_t i = 0; i < blockInsts.size(); ++i) {
+            auto& inst = blockInsts[i];
+            if (inst.opcode == IROpcode::STORE_LOCAL && !inst.operands.empty() &&
+                inst.operands[0].kind == OperandKind::Immediate) {
+                int32_t offset = immValue(inst.operands[0]);
+                if (!liveLocals.count(offset) && !allLoaded.count(offset)) {
+                    continue;
+                }
+            }
+            result.push_back(std::move(inst));
+        }
+    }
+
+    return result;
+}
+
+// ============================================================
+//  循环检测
+// ============================================================
+
+struct LoopInfo {
+    uint32_t headerLabel;        // 循环头标签
+    size_t headerIdx;            // 循环头在指令列表中的位置
+    size_t latchIdx;             // 回边指令的位置
+    size_t bodyStart;            // 循环体起始（通常在 header 之后）
+    size_t bodyEnd;              // 循环体结束（回边之后）
+    std::unordered_set<size_t> bodyIndices;  // 循环体内所有指令下标
+};
+
+std::vector<LoopInfo> detectLoops(const std::vector<IRInstruction>& insts) {
+    std::vector<LoopInfo> loops;
+    std::unordered_map<uint32_t, size_t> labelPositions;
+
+    for (size_t i = 0; i < insts.size(); ++i) {
+        if (insts[i].opcode == IROpcode::LABEL && insts[i].operands.size() == 1) {
+            labelPositions[labelId(insts[i].operands[0])] = i;
+        }
+    }
+
+    for (size_t i = 0; i < insts.size(); ++i) {
+        if (insts[i].opcode != IROpcode::JMP) continue;
+        if (insts[i].operands.size() != 1) continue;
+
+        uint32_t target = labelId(insts[i].operands[0]);
+        auto found = labelPositions.find(target);
+        if (found == labelPositions.end() || found->second >= i) continue;
+
+        // 找到回边
+        LoopInfo loop;
+        loop.headerLabel = target;
+        loop.headerIdx = found->second;
+        loop.latchIdx = i;
+
+        // 找到 bodyStart（header 之后第一个非 label 指令）
+        size_t bodyStart = loop.headerIdx + 1;
+        loop.bodyStart = bodyStart;
+        loop.bodyEnd = i + 1;
+
+        // 收集循环体指令
+        for (size_t j = bodyStart; j <= i; ++j) {
+            loop.bodyIndices.insert(j);
+        }
+
+        loops.push_back(std::move(loop));
+    }
+
+    return loops;
+}
+
+// ============================================================
+// 循环不变量外提 (LICM)
+// ============================================================
+
+bool isLoopInvariant(
+    const IROperand& operand,
+    const std::unordered_set<size_t>& loopBody,
+    const std::unordered_map<uint32_t, size_t>& defPositions) {
+    if (operand.kind == OperandKind::Immediate) return true;
+    if (operand.kind != OperandKind::VirtualReg) return false;
+
+    uint32_t id = regId(operand);
+    auto found = defPositions.find(id);
+    if (found == defPositions.end()) return true;  // 未定义（参数等）→ 不变
+    return !loopBody.count(found->second);         // 定义在循环外 → 不变
+}
+
+bool instIsLoopInvariant(
+    const IRInstruction& inst, size_t instIdx,
+    const std::unordered_set<size_t>& loopBody,
+    const std::unordered_map<uint32_t, size_t>& defPositions,
+    const std::unordered_set<uint32_t>& invariantRegs) {
+    switch (inst.opcode) {
+        case IROpcode::ADD:
+        case IROpcode::SUB:
+        case IROpcode::MUL:
+        case IROpcode::DIV:
+        case IROpcode::MOD:
+        case IROpcode::EQ:
+        case IROpcode::NE:
+        case IROpcode::LT:
+        case IROpcode::GT:
+        case IROpcode::LE:
+        case IROpcode::GE:
+        case IROpcode::AND:
+        case IROpcode::OR:
+            if (inst.operands.size() != 3) return false;
+            return (isLoopInvariant(inst.operands[1], loopBody, defPositions) ||
+                    invariantRegs.count(inst.operands[1].kind == OperandKind::VirtualReg ?
+                        regId(inst.operands[1]) : 0)) &&
+                   (isLoopInvariant(inst.operands[2], loopBody, defPositions) ||
+                    invariantRegs.count(inst.operands[2].kind == OperandKind::VirtualReg ?
+                        regId(inst.operands[2]) : 0));
+        case IROpcode::NEG:
+        case IROpcode::NOT:
+            if (inst.operands.size() != 2) return false;
+            return isLoopInvariant(inst.operands[1], loopBody, defPositions) ||
+                   invariantRegs.count(inst.operands[1].kind == OperandKind::VirtualReg ?
+                        regId(inst.operands[1]) : 0);
+        case IROpcode::LOAD_LOCAL:
+            if (inst.operands.size() != 2) return false;
+            return isLoopInvariant(inst.operands[1], loopBody, defPositions);
+        case IROpcode::LOAD_GLOBAL:
+            return true;  // 全局变量的地址在循环中不变（没有 STORE_GLOBAL 时）
+        default:
+            return false;
+    }
+}
+
+std::vector<IRInstruction> hoistLoopInvariants(std::vector<IRInstruction> insts) {
+    // 迭代处理：每次只处理最内层一个循环，然后重新检测
+    // 避免多循环时索引失效的问题
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        auto loops = detectLoops(insts);
+        if (loops.empty()) break;
+
+        // 从最内层循环开始：只取第一个（最小体）
+        std::sort(loops.begin(), loops.end(), [](const LoopInfo& a, const LoopInfo& b) {
+            return (a.bodyEnd - a.bodyStart) < (b.bodyEnd - b.bodyStart);
+        });
+        const auto& loop = loops[0];
+
+        // 构建定义位置映射
+        std::unordered_map<uint32_t, size_t> defPositions;
+        for (size_t i = 0; i < insts.size(); ++i) {
+            auto dest = destReg(insts[i]);
+            if (dest) defPositions[*dest] = i;
+        }
+
+        // 检查循环中是否有 STORE_GLOBAL 或 CALL（有副作用的不安全）
+        bool hasSideEffect = false;
+        for (size_t i = loop.bodyStart; i < loop.bodyEnd; ++i) {
+            const auto& inst = insts[i];
+            if (inst.opcode == IROpcode::STORE_GLOBAL ||
+                (inst.opcode == IROpcode::CALL && i < loop.bodyEnd - 1)) {
+                hasSideEffect = true;
+                break;
+            }
+        }
+        if (hasSideEffect) continue;
+
+        // 迭代计算不变量集合
+        std::unordered_set<uint32_t> invariantRegs;
+        bool invChanged = true;
+        while (invChanged) {
+            invChanged = false;
+            for (size_t i = loop.bodyStart; i < loop.bodyEnd; ++i) {
+                const auto& inst = insts[i];
+                auto dest = destReg(inst);
+                if (!dest || invariantRegs.count(*dest)) continue;
+
+                if (instIsLoopInvariant(inst, i, loop.bodyIndices, defPositions, invariantRegs)) {
+                    invariantRegs.insert(*dest);
+                    invChanged = true;
+                }
+            }
+        }
+
+        if (invariantRegs.empty()) continue;
+
+        // 收集循环体中 STORE_LOCAL 的偏移量，用于安全的 LOAD_LOCAL 外提判断
+        std::unordered_set<int32_t> storedLocalsInLoop;
+        for (size_t i = loop.bodyStart; i < loop.bodyEnd; ++i) {
+            if (insts[i].opcode == IROpcode::STORE_LOCAL && insts[i].operands.size() >= 2 &&
+                insts[i].operands[0].kind == OperandKind::Immediate) {
+                storedLocalsInLoop.insert(immValue(insts[i].operands[0]));
+            }
+        }
+
+        // 收集要外提的指令（保持原有顺序）
+        std::vector<IRInstruction> hoisted;
+        std::unordered_set<size_t> hoistedIndices;
+
+        for (size_t i = loop.bodyStart; i < loop.bodyEnd; ++i) {
+            auto dest = destReg(insts[i]);
+            if (!dest || !invariantRegs.count(*dest)) continue;
+            if (!isRemovableValueInst(insts[i])) continue;
+
+            // LOAD_LOCAL: 只有当循环体内没有 STORE_LOCAL 到同一偏移时才安全外提
+            if (insts[i].opcode == IROpcode::LOAD_LOCAL) {
+                if (insts[i].operands.size() >= 2 &&
+                    insts[i].operands[1].kind == OperandKind::Immediate) {
+                    int32_t offset = immValue(insts[i].operands[1]);
+                    if (storedLocalsInLoop.count(offset)) continue;
+                } else {
+                    continue;
+                }
+            }
+
+            hoisted.push_back(insts[i]);
+            hoistedIndices.insert(i);
+        }
+
+        if (hoisted.empty()) continue;
+
+        // 创建 preheader 标签并重组指令
+        uint32_t preheaderLabel = maxLabelId(insts) + 1;
+
+        std::vector<IRInstruction> result;
+        result.reserve(insts.size() + hoisted.size() + 2);
+
+        // 复制 loop header 之前的指令
+        for (size_t i = 0; i < loop.headerIdx; ++i) {
+            result.push_back(std::move(insts[i]));
+        }
+
+        // 插入 preheader
+        result.push_back({IROpcode::LABEL, {IROperand::label(preheaderLabel)}});
+        for (auto& inst : hoisted) {
+            result.push_back(std::move(inst));
+        }
+        result.push_back({IROpcode::JMP, {IROperand::label(loop.headerLabel)}});
+
+        // 复制循环体（跳过外提的指令）
+        for (size_t i = loop.headerIdx; i < loop.bodyEnd; ++i) {
+            if (!hoistedIndices.count(i)) {
+                result.push_back(std::move(insts[i]));
+            }
+        }
+
+        // 复制循环之后的指令
+        for (size_t i = loop.bodyEnd; i < insts.size(); ++i) {
+            result.push_back(std::move(insts[i]));
+        }
+
+        // 修改循环外的跳转目标：header → preheader
+        // preheader 结构：[LABEL preheader] [hoisted...] [JMP header]
+        // preheader 自身的 JMP 不应被重定向（它应该跳回原始循环头）
+        size_t preheaderEnd = loop.headerIdx + 1 + hoisted.size() + 1;
+        size_t preheaderJmpIdx = preheaderEnd - 1;  // preheader 末尾的 JMP
+        for (size_t i = 0; i < result.size(); ++i) {
+            auto& inst = result[i];
+            if (i >= preheaderEnd) break;  // preheader 之后的都是循环体/后置指令，不用改
+            if (i == preheaderJmpIdx) continue;  // 跳过 preheader 自身的 JMP
+            if ((inst.opcode == IROpcode::JMP || inst.opcode == IROpcode::BEQ ||
+                 inst.opcode == IROpcode::BNE) && !inst.operands.empty()) {
+                IROperand& target = inst.operands.back();
+                if (target.kind == OperandKind::Label &&
+                    labelId(target) == loop.headerLabel) {
+                    target = IROperand::label(preheaderLabel);
+                }
+            }
+        }
+
+        insts = std::move(result);
+        changed = true;
+    }
+
+    return insts;
+}
+
+// ============================================================
+// 循环展开
+// ============================================================
+
+struct InductionInfo {
+    uint32_t loadReg;    // 加载归纳变量的 vreg
+    uint32_t incReg;     // 递增后的 vreg
+    int32_t localOffset; // 局部变量偏移
+    int32_t increment;   // 递增量
+    int32_t limit;       // 上限（如果是已知常量）
+    bool hasLimit;       // 是否已知上限
+    size_t condIdx;      // 比较指令位置
+    size_t branchIdx;    // 分支指令位置
+    size_t incIdx;       // 递增指令位置
+    size_t storeIdx;     // 存储指令位置
+};
+
+std::optional<InductionInfo> detectInductionVar(
+    const std::vector<IRInstruction>& insts, const LoopInfo& loop) {
+    InductionInfo info{};
+    info.hasLimit = false;
+    info.limit = 0;
+    bool foundInc = false;
+
+    // 查找 STORE_LOCAL %offset, %inc 模式（循环体末尾）
+    for (size_t i = loop.bodyEnd - 1; i >= loop.bodyStart && i != static_cast<size_t>(-1); --i) {
+        const auto& inst = insts[i];
+        if (inst.opcode == IROpcode::STORE_LOCAL && inst.operands.size() == 2 &&
+            inst.operands[0].kind == OperandKind::Immediate &&
+            inst.operands[1].kind == OperandKind::VirtualReg) {
+
+            int32_t offset = immValue(inst.operands[0]);
+            uint32_t incReg = regId(inst.operands[1]);
+
+            // 查找 ADD %incReg, %loadReg, %increment
+            for (size_t j = i; j >= loop.bodyStart && j != static_cast<size_t>(-1); --j) {
+                const auto& prevInst = insts[j];
+                if (prevInst.opcode == IROpcode::ADD && prevInst.operands.size() == 3 &&
+                    prevInst.operands[0].kind == OperandKind::VirtualReg &&
+                    regId(prevInst.operands[0]) == incReg &&
+                    prevInst.operands[2].kind == OperandKind::Immediate) {
+                    info.loadReg = regId(prevInst.operands[1]);
+                    info.increment = immValue(prevInst.operands[2]);
+                    info.incReg = incReg;
+                    info.localOffset = offset;
+                    info.incIdx = j;
+                    info.storeIdx = i;
+                    foundInc = true;
+                    break;
+                }
+                // 也匹配 lhs 为立即数的情况
+                if (prevInst.opcode == IROpcode::ADD && prevInst.operands.size() == 3 &&
+                    prevInst.operands[0].kind == OperandKind::VirtualReg &&
+                    regId(prevInst.operands[0]) == incReg &&
+                    prevInst.operands[1].kind == OperandKind::Immediate) {
+                    info.loadReg = regId(prevInst.operands[2]);
+                    info.increment = immValue(prevInst.operands[1]);
+                    info.incReg = incReg;
+                    info.localOffset = offset;
+                    info.incIdx = j;
+                    info.storeIdx = i;
+                    foundInc = true;
+                    break;
+                }
+            }
+            if (foundInc) break;
+        }
+    }
+
+    if (!foundInc) return std::nullopt;
+
+    // 查找比较与分支
+    for (size_t i = loop.bodyStart; i < loop.bodyEnd; ++i) {
+        const auto& inst = insts[i];
+        if ((inst.opcode == IROpcode::LT || inst.opcode == IROpcode::LE) &&
+            inst.operands.size() == 3 &&
+            inst.operands[0].kind == OperandKind::VirtualReg) {
+            uint32_t dest = regId(inst.operands[0]);
+
+            // 查找使用此 cmpReg 的分支
+            for (size_t j = i + 1; j < loop.bodyEnd; ++j) {
+                if ((insts[j].opcode == IROpcode::BEQ || insts[j].opcode == IROpcode::BNE) &&
+                    insts[j].operands.size() == 3 &&
+                    insts[j].operands[0].kind == OperandKind::VirtualReg &&
+                    regId(insts[j].operands[0]) == dest) {
+                    info.condIdx = i;
+                    info.branchIdx = j;
+
+                    // 检查上限
+                    if (inst.operands[2].kind == OperandKind::Immediate) {
+                        info.limit = immValue(inst.operands[2]);
+                        info.hasLimit = true;
+                    }
+                    // 检查是否比较的是归纳变量
+                    bool isInduction = false;
+                    if (inst.operands[1].kind == OperandKind::VirtualReg &&
+                        regId(inst.operands[1]) == info.loadReg) {
+                        isInduction = true;
+                    }
+                    if (isInduction) return info;
+                    break;
+                }
+            }
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::vector<IRInstruction> unrollLoops(std::vector<IRInstruction> insts) {
+    // 迭代处理：每次只展开最内层一个循环，然后重新检测
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        auto loops = detectLoops(insts);
+        if (loops.empty()) break;
+
+        // 从内层到外层，只取第一个（最内层）
+        std::sort(loops.begin(), loops.end(), [](const LoopInfo& a, const LoopInfo& b) {
+            return (a.bodyEnd - a.bodyStart) < (b.bodyEnd - b.bodyStart);
+        });
+        const auto& loop = loops[0];
+
+        auto indVar = detectInductionVar(insts, loop);
+        if (!indVar) continue;
+        if (!indVar->hasLimit) continue;
+
+        int32_t limit = indVar->limit;
+        int32_t increment = indVar->increment;
+        if (increment <= 0) continue;
+        int64_t tripCount = (limit + increment - 1) / increment;
+
+        // 只有迭代次数 >= 4 的循环值得展开
+        if (tripCount < 4) continue;
+        if (tripCount > 10000) continue;
+
+        // 检查循环体中没有 CALL 或嵌套循环
+        bool hasCall = false;
+        for (size_t i = loop.bodyStart; i < loop.bodyEnd; ++i) {
+            if (insts[i].opcode == IROpcode::CALL) { hasCall = true; break; }
+        }
+        if (hasCall) continue;
+
+        // 展开因子
+        int unrollFactor = 4;
+        if (tripCount < 8) unrollFactor = 2;
+
+        int64_t unrolledCount = tripCount / unrollFactor;
+        if (unrolledCount < 1) continue;
+
+        // 收集循环体指令（不包括末尾的 JMP）
+        size_t bodyRealEnd = loop.bodyEnd;
+        if (bodyRealEnd > 0 && insts[bodyRealEnd - 1].opcode == IROpcode::JMP) {
+            bodyRealEnd--;
+        }
+        std::vector<IRInstruction> bodyCopy(
+            insts.begin() + static_cast<ptrdiff_t>(loop.bodyStart),
+            insts.begin() + static_cast<ptrdiff_t>(bodyRealEnd));
+
+        // 分配新的 vreg 和 label ID
+        uint32_t freshVReg = maxRegId(insts) + 1;
+        uint32_t freshLabel = maxLabelId(insts) + 1;
+
+        auto cloneBody = [&](std::unordered_map<uint32_t, uint32_t>& localMap) -> std::vector<IRInstruction> {
+            std::vector<IRInstruction> cloned;
+            for (auto inst : bodyCopy) {
+                for (auto& op : inst.operands) {
+                    if (op.kind == OperandKind::VirtualReg) {
+                        uint32_t id = regId(op);
+                        auto found = localMap.find(id);
+                        if (found == localMap.end()) {
+                            found = localMap.emplace(id, freshVReg++).first;
+                        }
+                        op = IROperand::reg(found->second);
+                    }
+                }
+                cloned.push_back(std::move(inst));
+            }
+            return cloned;
+        };
+
+        uint32_t newHeader = freshLabel++;
+        uint32_t newBodyLabel = freshLabel++;
+        uint32_t newExit = freshLabel++;
+
+        std::vector<IRInstruction> result;
+
+        // header 之前的指令
+        for (size_t i = 0; i < loop.headerIdx; ++i) {
+            result.push_back(std::move(insts[i]));
+        }
+
+        // 新 header：直接跳入展开体
+        result.push_back({IROpcode::LABEL, {IROperand::label(newHeader)}});
+        result.push_back({IROpcode::JMP, {IROperand::label(newBodyLabel)}});
+
+        // 展开的循环体
+        result.push_back({IROpcode::LABEL, {IROperand::label(newBodyLabel)}});
+
+        // 生成 unrolledCount 次 x unrollFactor 展开体
+        for (int64_t uc = 0; uc < unrolledCount; ++uc) {
+            for (int u = 0; u < unrollFactor; ++u) {
+                std::unordered_map<uint32_t, uint32_t> localRegMap;
+                auto cloned = cloneBody(localRegMap);
+                for (auto& inst : cloned) {
+                    result.push_back(std::move(inst));
+                }
+            }
+
+            // 中间检查：如果还有更多展开迭代，检查是否继续
+            if (uc + 1 < unrolledCount) {
+                result.push_back(
+                    {IROpcode::LOAD_LOCAL,
+                     {IROperand::reg(freshVReg), IROperand::imm(indVar->localOffset)}});
+                int32_t unrollStep = increment * unrollFactor;
+                result.push_back(
+                    {IROpcode::ADD,
+                     {IROperand::reg(freshVReg + 1),
+                      IROperand::reg(freshVReg),
+                      IROperand::imm(unrollStep)}});
+                result.push_back(
+                    {IROpcode::LT,
+                     {IROperand::reg(freshVReg + 2),
+                      IROperand::reg(freshVReg + 1),
+                      IROperand::imm(limit)}});
+                result.push_back(
+                    {IROpcode::BNE,
+                     {IROperand::reg(freshVReg + 2), IROperand::imm(0),
+                      IROperand::label(newBodyLabel)}});
+                freshVReg += 3;
+            }
+        }
+
+        // 跳转到原始循环处理剩余迭代
+        result.push_back({IROpcode::JMP, {IROperand::label(loop.headerLabel)}});
+
+        // 新 exit label
+        result.push_back({IROpcode::LABEL, {IROperand::label(newExit)}});
+
+        // 复制循环之后的指令
+        for (size_t i = loop.bodyEnd; i < insts.size(); ++i) {
+            result.push_back(std::move(insts[i]));
+        }
+
+        // 修改跳转目标：原来跳出循环的 → newExit
+        uint32_t exitLabel = 0;
+        for (size_t i = loop.headerIdx; i < loop.bodyEnd; ++i) {
+            const auto& inst = insts[i];
+            if ((inst.opcode == IROpcode::BEQ || inst.opcode == IROpcode::BNE) &&
+                inst.operands.size() == 3) {
+                uint32_t tgt = labelId(inst.operands[2]);
+                bool inLoop = false;
+                for (size_t j = loop.headerIdx; j < loop.bodyEnd; ++j) {
+                    if (insts[j].opcode == IROpcode::LABEL && insts[j].operands.size() == 1 &&
+                        labelId(insts[j].operands[0]) == tgt) {
+                        inLoop = true;
+                        break;
+                    }
+                }
+                if (!inLoop) { exitLabel = tgt; break; }
+            }
+        }
+
+        for (size_t i = 0; i < result.size(); ++i) {
+            auto& inst = result[i];
+            if ((inst.opcode == IROpcode::JMP || inst.opcode == IROpcode::BEQ ||
+                 inst.opcode == IROpcode::BNE) && !inst.operands.empty()) {
+                IROperand& target = inst.operands.back();
+                if (target.kind == OperandKind::Label) {
+                    uint32_t tgt = labelId(target);
+                    if (exitLabel != 0 && tgt == exitLabel) {
+                        target = IROperand::label(newExit);
+                    } else if (tgt == loop.headerLabel) {
+                        // 跳过 epilogue JMP：它紧邻 newExit 标签之前，应保持跳向原始循环头
+                        if (i + 1 < result.size() &&
+                            result[i + 1].opcode == IROpcode::LABEL &&
+                            result[i + 1].operands.size() == 1 &&
+                            labelId(result[i + 1].operands[0]) == newExit) {
+                            continue;
+                        }
+                        target = IROperand::label(newHeader);
+                    }
+                }
+            }
+        }
+
+        insts = std::move(result);
+        changed = true;
+    }
+
+    return insts;
 }
 
 }  // namespace
@@ -1091,11 +1793,16 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
         }
 
         fn.instructions = std::move(optimized);
+
+        // 循环优化：LICM + 循环展开（在 copy/CSE/DCE 之前）
+        fn.instructions = hoistLoopInvariants(std::move(fn.instructions));
+        fn.instructions = unrollLoops(std::move(fn.instructions));
+
         for (int pass = 0; pass < 3; ++pass) {
             size_t before = fn.instructions.size();
             fn.instructions = propagateCopiesAndCse(std::move(fn.instructions));
             fn.instructions = removeDeadValueInsts(fn.instructions);
-            fn.instructions = removeDeadLocalStores(fn.instructions);
+            fn.instructions = removeDeadLocalStoresPerBlock(fn.instructions);
             fn.instructions = removeSelfCopies(std::move(fn.instructions));
             fn.instructions = invertBranchOverJump(std::move(fn.instructions));
             fn.instructions = rewriteJumpChains(std::move(fn.instructions));
@@ -1230,7 +1937,7 @@ IRProgram Optimizer::optimize(const IRProgram& input) {
 
         // 尾递归转换后重新清理死代码
         fn.instructions = removeDeadValueInsts(fn.instructions);
-        fn.instructions = removeDeadLocalStores(fn.instructions);
+        fn.instructions = removeDeadLocalStoresPerBlock(fn.instructions);
         fn.instructions = removeSelfCopies(std::move(fn.instructions));
         fn.instructions = invertBranchOverJump(std::move(fn.instructions));
         fn.instructions = rewriteJumpChains(std::move(fn.instructions));
