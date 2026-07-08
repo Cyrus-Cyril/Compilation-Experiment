@@ -1467,26 +1467,17 @@ std::optional<InductionInfo> detectInductionVar(
 
 std::vector<IRInstruction> unrollLoops(std::vector<IRInstruction> insts) {
     // 迭代处理：每次只展开最内层一个循环，然后重新检测
-    // 跟踪已展开的 header，避免因原始循环体保留导致无限重复展开
-    std::unordered_set<uint32_t> unrolledHeaders;
     bool changed = true;
     while (changed) {
         changed = false;
         auto loops = detectLoops(insts);
         if (loops.empty()) break;
 
-        // 从内层到外层，找第一个未展开的循环
+        // 从内层到外层，只取第一个（最内层）
         std::sort(loops.begin(), loops.end(), [](const LoopInfo& a, const LoopInfo& b) {
             return (a.bodyEnd - a.bodyStart) < (b.bodyEnd - b.bodyStart);
         });
-        size_t pickIdx = 0;
-        while (pickIdx < loops.size() && unrolledHeaders.count(loops[pickIdx].headerLabel)) {
-            ++pickIdx;
-        }
-        if (pickIdx >= loops.size()) break;
-        const auto& loop = loops[pickIdx];
-
-        unrolledHeaders.insert(loop.headerLabel);
+        const auto& loop = loops[0];
 
         auto indVar = detectInductionVar(insts, loop);
         if (!indVar) continue;
